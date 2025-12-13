@@ -99,32 +99,32 @@ print(f"  Dimensions: {locations.shape[1]}D")
 # Visualizations
 fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-# Plot 1: Spatial locations
-ax = axes[0]
-if locations.shape[1] == 2:
-    scatter = ax.scatter(locations[:, 0], locations[:, 1],
-                         c=true_labels, cmap='RdYlGn_r', s=50,
-                         vmin=0, vmax=1, edgecolors='black', linewidth=0.5)
-    if dataset_type == 'synthetic':
-        ax.axvline(0.5, color='blue', linestyle='--', alpha=0.5, label='Quarter boundary')
-        ax.axhline(0.5, color='blue', linestyle='--', alpha=0.5)
-        ax.legend()
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-    ax.set_title('True Labels\n(0=alternative, 1=null)')
-else:
-    # PCA for high-D
-    from sklearn.decomposition import PCA
-
-    pca = PCA(n_components=2, random_state=RANDOM_STATE)
-    locations_2d = pca.fit_transform(locations)
-    scatter = ax.scatter(locations_2d[:, 0], locations_2d[:, 1],
-                         c=true_labels, cmap='RdYlGn_r', s=50,
-                         vmin=0, vmax=1, edgecolors='black', linewidth=0.5)
-    ax.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%})')
-    ax.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%})')
-    ax.set_title(f'True Labels (PCA from {locations.shape[1]}D)')
-plt.colorbar(scatter, ax=ax, label='Label')
+# # Plot 1: Spatial locations
+# ax = axes[0]
+# if locations.shape[1] == 2:
+#     scatter = ax.scatter(locations[:, 0], locations[:, 1],
+#                          c=true_labels, cmap='RdYlGn_r', s=50,
+#                          vmin=0, vmax=1, edgecolors='black', linewidth=0.5)
+#     if dataset_type == 'synthetic':
+#         ax.axvline(0.5, color='blue', linestyle='--', alpha=0.5, label='Quarter boundary')
+#         ax.axhline(0.5, color='blue', linestyle='--', alpha=0.5)
+#         ax.legend()
+#     ax.set_xlabel('x')
+#     ax.set_ylabel('y')
+#     ax.set_title('True Labels\n(0=alternative, 1=null)')
+# else:
+#     # PCA for high-D
+#     from sklearn.decomposition import PCA
+#
+#     pca = PCA(n_components=2, random_state=RANDOM_STATE)
+#     locations_2d = pca.fit_transform(locations)
+#     scatter = ax.scatter(locations_2d[:, 0], locations_2d[:, 1],
+#                          c=true_labels, cmap='RdYlGn_r', s=50,
+#                          vmin=0, vmax=1, edgecolors='black', linewidth=0.5)
+#     ax.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%})')
+#     ax.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%})')
+#     ax.set_title(f'True Labels (PCA from {locations.shape[1]}D)')
+# plt.colorbar(scatter, ax=ax, label='Label')
 
 # Plot 2: P-value distribution
 ax = axes[1]
@@ -137,31 +137,31 @@ ax.set_title('P-value Distribution')
 ax.legend()
 ax.grid(True, alpha=0.3)
 
-# Plot 3: Spatial p-values
-ax = axes[2]
-if locations.shape[1] == 2:
-    scatter = ax.scatter(locations[:, 0], locations[:, 1],
-                         c=p_values, cmap='RdYlGn', s=50,
-                         vmin=0, vmax=1, edgecolors='black', linewidth=0.5)
-    if dataset_type == 'synthetic':
-        ax.axvline(0.5, color='blue', linestyle='--', alpha=0.5)
-        ax.axhline(0.5, color='blue', linestyle='--', alpha=0.5)
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-    ax.set_title('Observed P-values')
-else:
-    scatter = ax.scatter(locations_2d[:, 0], locations_2d[:, 1],
-                         c=p_values, cmap='RdYlGn', s=50,
-                         vmin=0, vmax=1, edgecolors='black', linewidth=0.5)
-    ax.set_xlabel('PC1')
-    ax.set_ylabel('PC2')
-    ax.set_title(f'P-values (PCA from {locations.shape[1]}D)')
-plt.colorbar(scatter, ax=ax, label='P-value')
-
-plt.tight_layout()
-plt.show()
-print(f"\n✓ Saved: step1_data_{DATASET_NAME}.png")
-plt.close()
+# # Plot 3: Spatial p-values
+# ax = axes[2]
+# if locations.shape[1] == 2:
+#     scatter = ax.scatter(locations[:, 0], locations[:, 1],
+#                          c=p_values, cmap='RdYlGn', s=50,
+#                          vmin=0, vmax=1, edgecolors='black', linewidth=0.5)
+#     if dataset_type == 'synthetic':
+#         ax.axvline(0.5, color='blue', linestyle='--', alpha=0.5)
+#         ax.axhline(0.5, color='blue', linestyle='--', alpha=0.5)
+#     ax.set_xlabel('x')
+#     ax.set_ylabel('y')
+#     ax.set_title('Observed P-values')
+# else:
+#     scatter = ax.scatter(locations_2d[:, 0], locations_2d[:, 1],
+#                          c=p_values, cmap='RdYlGn', s=50,
+#                          vmin=0, vmax=1, edgecolors='black', linewidth=0.5)
+#     ax.set_xlabel('PC1')
+#     ax.set_ylabel('PC2')
+#     ax.set_title(f'P-values (PCA from {locations.shape[1]}D)')
+# plt.colorbar(scatter, ax=ax, label='P-value')
+#
+# plt.tight_layout()
+# plt.show()
+# print(f"\n✓ Saved: step1_data_{DATASET_NAME}.png")
+# plt.close()
 
 
 # ============================================================================
@@ -540,8 +540,8 @@ print(f"\nOptimization complete!")
 print(f"  Final loss: {losses[-1]:.2f}")
 print(f"  Final α range: [{alpha_final.min():.3f}, {alpha_final.max():.3f}]")
 print(f"  Final violations: {violations_final}")
-print(f"  Top-right mean α: {alpha_final[in_top_right].mean():.3f} (target ≈0.1)")
-print(f"  Elsewhere mean α: {alpha_final[~in_top_right].mean():.3f} (target ≈0.9)")
+# print(f"  Top-right mean α: {alpha_final[in_top_right].mean():.3f} (target ≈0.1)")
+# print(f"  Elsewhere mean α: {alpha_final[~in_top_right].mean():.3f} (target ≈0.9)")
 
 # Plot optimization diagnostics
 plot_optimization_diagnostics(
@@ -552,7 +552,7 @@ plot_optimization_diagnostics(
     locations=locations,
     alpha_final=alpha_final,
     true_labels=true_labels,
-    in_top_right=in_top_right,
+    # in_top_right=in_top_right,
     save_path='/mnt/user-data/outputs/step4_optimization_diagnostics.png'
 )
 print("\n✓ Saved: step4_optimization_diagnostics.png")
@@ -572,8 +572,8 @@ print(f"\nLocal FDR statistics:")
 print(f"  Range: [{lfdr.min():.3f}, {lfdr.max():.3f}]")
 print(f"  Mean: {lfdr.mean():.3f}")
 print(f"  Median: {np.median(lfdr):.3f}")
-print(f"  Top-right mean: {lfdr[in_top_right].mean():.3f}")
-print(f"  Elsewhere mean: {lfdr[~in_top_right].mean():.3f}")
+# print(f"  Top-right mean: {lfdr[in_top_right].mean():.3f}")
+# print(f"  Elsewhere mean: {lfdr[~in_top_right].mean():.3f}")
 
 # Plot local FDR
 fig, axes = plt.subplots(1, 3, figsize=(15, 4))
