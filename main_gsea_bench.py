@@ -13,7 +13,8 @@ import os
 import traceback
 from sklearn.model_selection import KFold
 from sklearn.metrics import roc_auc_score
-
+from scipy.linalg import eigvalsh
+import itertools
 # --- CONFIGURATION ---
 plt.rcParams.update({
     'font.size': 14, 'axes.labelsize': 16, 'axes.titlesize': 18,
@@ -32,9 +33,16 @@ class KernelValidator:
         """
         Checks if the Graph has good cluster structure (Spectral Gap).
         """
-        from scipy.sparse.linalg import eigsh
+        # Inside main_gsea_bench.py, before line 349 (before validate_structure is called)
+        print(f"DEBUG: K statistics - Min: {K.min()}, Max: {K.max()}, Has NaNs: {np.isnan(K).any()}")
+
+        if np.isnan(K).any() or np.isinf(K).any():
+            print("CRITICAL: Kernel matrix contains NaNs or Infs! Fixing with 0 replacement...")
+            K = np.nan_to_num(K)  # Replace NaN with 0 and Inf with large numbers
+
         # Quick estimation of top 5 eigenvalues
-        vals = eigsh(K, k=5, which='LM', return_eigenvectors=False)
+        all_vals = np.linalg.eigvalsh(K)
+        vals = all_vals[-5:]
         vals = np.sort(vals)[::-1]  # Sort descending
 
         lambda_1 = vals[0] if vals[0] > 0 else 1e-10
@@ -46,12 +54,25 @@ class KernelValidator:
 
         if ratio > 0.99:
             print("    -> Graph has very strong, nearly disconnected clusters.")
+            # Check how many eigenvalues are effectively 1.0
+            num_components = np.sum(np.isclose(all_vals, 1.0))
+            print(f"Number of disconnected clusters: {num_components}")
+            print(f"Total nodes: {len(all_vals)}")
+
+            if num_components > (len(all_vals) * 0.9):
+                print(
+                    "WARNING: Graph is shattered (too many tiny clusters). Tuning might be picking too narrow a kernel.")
+                return False
+            else:
+                print("SUCCESS: Meaningful cluster structure detected.")
+                return True
         elif ratio < 0.5:
             print("    -> Graph is very connected (Hairball).")
+            return False
         else:
             print("    -> Graph has moderate structure.")
+            return True
 
-        return vals
 
     @staticmethod
     def validate_signal_alignment(adj_matrix, p_values, n_perms=100):
@@ -95,7 +116,7 @@ class KernelValidator:
 # ============================================================================
 
 def optimize_pointwise(K, p_values, f0, f1, lambda_reg=10.0, lambda_bound=500.0,
-                       learning_rate=0.005, max_iter=5000, tol=1e-6):
+                       learning_rate=0.05, max_iter=15000, tol=1e-6):
     """
     Vanilla Natural Gradient Descent (CPU/NumPy) with history tracking.
     """
@@ -152,52 +173,78 @@ def optimize_pointwise(K, p_values, f0, f1, lambda_reg=10.0, lambda_bound=500.0,
 
 class HyperparameterTuner:
     @staticmethod
-    def tune_lambda(K, p_values, f0, f1, param_grid=None, n_folds=3, dataset_name="Dataset"):
+    def tune_lambda(p_values,ppi, f0, f1, param_grid=None, n_folds=3, dataset_name="Dataset"):
         """
         Performs K-Fold CV to find the best lambda_reg on the NLL.
         """
         if param_grid is None:
-            param_grid = [0.001, 0.01, 0.1, 1.0, 10.0, 100]
+            param_grid = list(np.logspace(-15, 20, 15))
+            # Moving beta_grid definition here as in your original code
+            beta_grid = [2]
+        else:
+            # Fallback if param_grid is provided but beta_grid isn't defined in scope
+            beta_grid = [2]
 
         print(f"    Starting HP Tuning (Grid: {param_grid})...")
 
         kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
-        avg_scores = []
 
-        for lam in param_grid:
-            fold_nlls = []
-            for train_idx, test_idx in kf.split(p_values):
-                # Split
-                K_train = K[np.ix_(train_idx, train_idx)]
-                K_test_cross = K[np.ix_(test_idx, train_idx)]
+        # CHANGED: Use a dictionary to store scores separated by beta for plotting
+        results_by_beta = {b: [] for b in beta_grid}
+        flat_scores = []  # To keep track of the absolute best
+        flat_params = []  # To keep track of the absolute best
 
-                p_train = p_values[train_idx]
-                f0_train, f1_train = f0[train_idx], f1[train_idx]
+        # Loop structure kept similar, but organized for the plot
+        for bam in beta_grid:
+            # Calculate Kernel once per beta
+            K = SpatialFDRGraphKernel(ppi, kernel_type='diffusion', normalized=True, beta=bam).K
 
-                # Train (Fast iter)
-                c_train, _ = optimize_pointwise(K_train, p_train, f0_train, f1_train,
-                                                lambda_reg=lam, max_iter=1000)
+            for lam in param_grid:
+                fold_nlls = []
+                for train_idx, test_idx in kf.split(p_values):
+                    # Split
+                    K_train = K[np.ix_(train_idx, train_idx)]
+                    K_test_cross = K[np.ix_(test_idx, train_idx)]
 
-                # Predict
-                alpha_test = K_test_cross @ c_train
-                alpha_test = np.clip(alpha_test, 0, 1)
+                    p_train = p_values[train_idx]
+                    f0_train, f1_train = f0[train_idx], f1[train_idx]
 
-                # Evaluate NLL
-                mix_test = alpha_test * f0[test_idx] + (1 - alpha_test) * f1[test_idx]
-                mix_test = np.clip(mix_test, 1e-12, None)
-                nll = -np.sum(np.log(mix_test))
-                fold_nlls.append(nll)
+                    # Train (Fast iter)
+                    c_train, _ = optimize_pointwise(K_train, p_train, f0_train, f1_train,
+                                                    lambda_reg=lam)
 
-            avg_scores.append(np.mean(fold_nlls))
+                    # Predict
+                    alpha_test = K_test_cross @ c_train
+                    alpha_test = np.clip(alpha_test, 0.00001, 0.99999)
 
-        best_idx = np.argmin(avg_scores)
-        best_lambda = param_grid[best_idx]
-        print(f"    [Tuning] Best Lambda: {best_lambda}")
+                    # Evaluate NLL
+                    mix_test = alpha_test * f0[test_idx] + (1 - alpha_test) * f1[test_idx]
+                    mix_test = np.clip(mix_test, 1e-5, None)
+                    nll = -np.sum(np.log(mix_test))
+                    fold_nlls.append(nll)
 
-        # Plot CV Results
-        plt.figure(figsize=(8, 5))
-        plt.plot(param_grid, avg_scores, 'o-', linewidth=2, color='blue')
-        plt.axvline(best_lambda, color='red', linestyle='--', label=f'Best: {best_lambda}')
+                mean_score = np.mean(fold_nlls)
+
+                # Store for plotting
+                results_by_beta[bam].append(mean_score)
+
+                # Store for finding best
+                flat_scores.append(mean_score)
+                flat_params.append((lam, bam))
+
+        # Find global best
+        best_idx = np.argmin(flat_scores)
+        best_lambda, best_beta = flat_params[best_idx]
+        print(f"    [Tuning] Best Lambda: {best_lambda} (with Beta: {best_beta})")
+
+        # --- CHANGED: 2D PLOT SECTION ---
+        plt.figure(figsize=(10, 6))
+
+        # Plot a separate line for each beta
+        for bam in beta_grid:
+            plt.plot(param_grid, results_by_beta[bam], 'o-', linewidth=2, label=f'Beta={bam}')
+
+        plt.axvline(best_lambda, color='red', linestyle='--', label=f'Best $\lambda$: {best_lambda:.2e}')
         plt.xscale('log')
         plt.xlabel('Lambda')
         plt.ylabel('CV NLL')
@@ -205,8 +252,9 @@ class HyperparameterTuner:
         plt.legend()
         plt.grid(True, alpha=0.3)
         plt.show()
+        # --------------------------------
 
-        return best_lambda
+        return best_lambda, best_beta
 
 
 # ============================================================================
@@ -308,17 +356,22 @@ class FDRMethods:
 
         numer = norm.pdf(z, loc=mu, scale=sig)
         denom = norm.pdf(z)
-        f1_vals = np.clip(numer / denom, 0, 2000.0)
+        f1_vals = np.clip(numer / denom, 0, 5000.0)
         return f0_vals, f1_vals
 
     @staticmethod
-    def smooth_graph_fdr(p_values, adj_matrix, dataset_name, alpha=0.05, lambda_reg=10.0):
+    def smooth_graph_fdr(p_values, adj_matrix, dataset_name, alpha=0.05, lambda_reg=10.0,beta = 2):
         n = len(p_values)
-        gk = SpatialFDRGraphKernel(adj_matrix, kernel_type='diffusion', normalized=True, beta=2.0)
+        gk = SpatialFDRGraphKernel(adj_matrix, kernel_type='diffusion', normalized=True, beta=beta)
 
         print(f"  Validating Graph-Signal Relationship...")
-        KernelValidator.validate_structure(gk.K)
+        is_graph_valid = KernelValidator.validate_structure(gk.K)
         KernelValidator.validate_signal_alignment(adj_matrix, p_values)
+
+        print(f" Finish Validating")
+
+        if not is_graph_valid :
+            return None, None, None, None, None
 
         f0, f1 = FDRMethods.estimate_densities(p_values)
         c_opt, history = optimize_pointwise(gk.K, p_values, f0, f1, lambda_reg=lambda_reg)
@@ -397,9 +450,11 @@ class BenchmarkRunner:
         if deg_df.index.duplicated().any(): deg_df = deg_df[~deg_df.index.duplicated(keep='first')]
 
         if hasattr(ppi, 'nodes'):
-            graph_nodes = list(ppi.nodes()); is_nx = True
+            graph_nodes = list(ppi.nodes());
+            is_nx = True
         elif isinstance(ppi, pd.DataFrame):
-            graph_nodes = ppi.index.tolist(); is_nx = False
+            graph_nodes = ppi.index.tolist();
+            is_nx = False
         else:
             return None, None, None
 
@@ -446,7 +501,7 @@ class BenchmarkRunner:
             print(f"\nBenchmark: {bname}");
             d_count = 0
             for dname, content in dsets.items():
-                if d_count >= 3: break
+                if d_count >= 10: break
                 print(f"  Dataset ({d_count + 1}/3): {dname}")
 
                 # 1. Align
@@ -463,9 +518,8 @@ class BenchmarkRunner:
                 print("    Step A: Tuning Lambda on 1000 genes...")
                 p_tune, genes_tune, ppi_tune = self.stratified_subsample(pvals, genes, ppi_mat, n_target=1000,
                                                                          n_bins=50)
-                gk_tune = SpatialFDRGraphKernel(ppi_tune, kernel_type='diffusion', normalized=True, beta=2.0)
                 f0_tune, f1_tune = FDRMethods.estimate_densities(p_tune)
-                best_lambda = HyperparameterTuner.tune_lambda(gk_tune.K, p_tune, f0_tune, f1_tune, dataset_name=dname)
+                best_lambda, best_beta = HyperparameterTuner.tune_lambda( p_tune,ppi_tune, f0_tune, f1_tune, dataset_name=dname)
 
                 # 2b. Main Execution (5000 genes)
                 print(f"    Step B: Main Execution on 5000 genes (Lambda={best_lambda})...")
@@ -478,21 +532,21 @@ class BenchmarkRunner:
 
                 # Run Graph FDR
                 genes_graph = []
-                try:
-                    rej_graph, _, pi_0, K_final, history = FDRMethods.smooth_graph_fdr(
-                        p_samp, ppi_samp,
-                        dataset_name=dname,
-                        lambda_reg=best_lambda,
-                        alpha=0.1
-                    )
-                    genes_graph = [genes_samp[i] for i in range(len(genes_samp)) if rej_graph[i]]
+                rej_graph, _, pi_0, K_final, history = FDRMethods.smooth_graph_fdr(
+                    p_samp, ppi_samp,
+                    dataset_name=dname,
+                    lambda_reg=best_lambda,
+                    beta = best_beta,
+                    alpha=0.1
+                )
+                if rej_graph is None:
+                    continue
+                genes_graph = [genes_samp[i] for i in range(len(genes_samp)) if rej_graph[i]]
 
-                    # Plot History
-                    plot_optimization_history(history, dname)
+                # Plot History
+                plot_optimization_history(history, dname)
 
-                except Exception as e:
-                    print(f"    Graph FDR Failed: {e}");
-                    traceback.print_exc()
+
 
                 # Enrichment & AUC Calculation
                 eng = EnrichmentEngine(content['pathways'], genes_samp)
