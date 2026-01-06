@@ -243,7 +243,8 @@ class GlobalFDRRegressor:
             # Track history
             if iteration % 50 == 0:
                 loss = self._compute_loss(self.c_, K_train, alpha_clipped)
-                alpha_current = self.predict(K_train)
+                # Compute alpha directly (don't use predict() as is_fitted_ not yet set)
+                alpha_current = expit(K_train @ self.c_)
 
                 self.history_['losses'].append(loss)
                 self.history_['grad_norms'].append(grad_norm)
