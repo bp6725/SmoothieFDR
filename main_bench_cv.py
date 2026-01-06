@@ -37,10 +37,10 @@ from spatial_fdr_evaluation.methods.kernels import compute_kernel_matrix, estima
 # 1. CONFIGURATION
 # ============================================================================
 DATASETS_TO_RUN = [
+'30_satellite',
     '33_skin',
     '19_landsat',
     '31_satimage-2',
-    '30_satellite',
     '41_Waveform',
     '25_musk',
     '4_breastw',
