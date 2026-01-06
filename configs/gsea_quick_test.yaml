@@ -1,0 +1,34 @@
+# GSEA Quick Test Configuration
+# ==============================
+# Fast configuration for testing/debugging
+
+type: gsea
+
+data_path: Data/benchmarks.pkl
+
+# Only TGCA, limited datasets
+benchmarks:
+  - TGCA
+max_datasets_per_benchmark: 2
+
+# Smaller subsamples for speed
+subsample_tuning: 500
+subsample_main: 2000
+n_bins_tuning: 25
+n_bins_main: 50
+
+# Kernel
+beta_grid: [2]
+lambda_grid: []
+
+# Faster optimization
+learning_rate: 0.05
+lambda_reg: 10.0
+lambda_bound: 500.0
+max_iter: 5000
+
+n_folds: 3
+random_state: 42
+
+validate_structure: true
+validate_alignment: true
