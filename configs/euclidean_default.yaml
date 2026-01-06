@@ -1,0 +1,86 @@
+# Euclidean (ADbench) Benchmark Configuration
+# ============================================
+# Default configuration for main_bench_cv.py
+
+type: euclidean
+
+# Datasets to run
+datasets:
+  - '33_skin'
+  - '19_landsat'
+  - '31_satimage-2'
+  - '30_satellite'
+  - '41_Waveform'
+  - '25_musk'
+  - '4_breastw'
+  - '45_wine'
+  - '15_Hepatitis'
+
+# Per-dataset configuration (optional overrides)
+dataset_configs:
+  '33_skin':
+    n_total: [50, 200, 200]
+    n_clusters: 2
+    min_cluster_size: 30
+    sigma_factor: 1.0
+    cluster_corruption: 0.2
+    effect_strength: medium
+
+  '31_satimage-2':
+    n_total: [50, 200, 200]
+    n_clusters: 2
+    min_cluster_size: 30
+    sigma_factor: 0.5  # Narrower kernel for this dataset
+    cluster_corruption: 0.2
+    effect_strength: medium
+
+  '41_Waveform':
+    n_total: [50, 200, 200]
+    n_clusters: 2
+    min_cluster_size: 30
+    sigma_factor: 0.5
+    cluster_corruption: 0.2
+    effect_strength: medium
+
+  '4_breastw':
+    n_total: [50, 200, 200]
+    n_clusters: 2
+    min_cluster_size: 20
+    sigma_factor: 0.5
+    cluster_corruption: 0.2
+    effect_strength: medium
+
+  '45_wine':
+    n_total: [50, 200, 200]
+    n_clusters: 2
+    min_cluster_size: 20
+    sigma_factor: 0.5
+    cluster_corruption: 0.2
+    effect_strength: medium
+
+  '15_Hepatitis':
+    n_total: [50, 200, 200]
+    n_clusters: 2
+    min_cluster_size: 20
+    sigma_factor: 0.5
+    cluster_corruption: 0.2
+    effect_strength: medium
+
+# Optimization parameters
+optimizer: vanilla
+learning_rate: 0.0005
+lambda_reg: 10.0
+lambda_bound: 500.0
+max_iter: 5000
+lambda_sparse: 0.001
+
+# Cross-validation
+sigma_grid: [0.1, 0.2, 0.3, 0.5, 0.8, 1.0, 1.5, 2.0]
+n_folds: 5
+
+# Experiment settings
+random_state: 42
+n_seeds: 1
+
+# Output
+results_dir: results/euclidean
