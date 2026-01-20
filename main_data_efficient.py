@@ -379,6 +379,125 @@ def run_optimization_stage1(K_matrix, f0_vals, f1_vals, verbose=False):
     return c
 
 
+def run_optimization_stage1_with_hessian(K_matrix, f0_vals, f1_vals, verbose=False):
+    """
+    Run Stage 1 optimization and return coefficients + Hessian for uncertainty.
+
+    Returns
+    -------
+    c : np.ndarray
+        Optimized coefficients
+    H : np.ndarray
+        Hessian matrix at MAP estimate (for posterior variance)
+    alpha_final : np.ndarray
+        Final alpha values at training points
+    """
+    n = K_matrix.shape[0]
+    c = np.ones(n) * (1.0 / (K_matrix.sum(axis=1).mean() + 1e-10))
+
+    lr = OPT_PARAMS['lr']
+    reg = OPT_PARAMS['lambda_reg']
+    bnd = OPT_PARAMS['lambda_bound']
+
+    for t in range(OPT_PARAMS['max_iter']):
+        alpha = K_matrix @ c
+        mix = np.clip(alpha * f0_vals + (1 - alpha) * f1_vals, 1e-12, None)
+        grad_nll = -(f0_vals - f1_vals) / mix
+        grad_bound = 2 * bnd * (np.maximum(0, alpha - 1) - np.maximum(0, -alpha))
+        grad_nat = grad_nll + grad_bound + (2 * reg * c)
+        gnorm = np.linalg.norm(grad_nat)
+        if gnorm > 5.0:
+            grad_nat = grad_nat * (5.0 / gnorm)
+        c -= lr * grad_nat
+
+    # Compute final alpha
+    alpha_final = K_matrix @ c
+
+    # Compute Hessian at MAP estimate
+    # H = H_data + 2*lambda*K + H_bound
+    # H_data = K^T diag(h_i) K where h_i = (f0-f1)^2 / mix^2 (Fisher info)
+
+    mix_final = np.clip(alpha_final * f0_vals + (1 - alpha_final) * f1_vals, 1e-12, None)
+
+    # Fisher information per observation
+    h_i = ((f0_vals - f1_vals) ** 2) / (mix_final ** 2)
+
+    # Data Hessian: H_data = K^T diag(h_i) K
+    # More efficient: H_data = (K * sqrt(h_i)).T @ (K * sqrt(h_i))
+    sqrt_h = np.sqrt(h_i)
+    K_weighted = K_matrix * sqrt_h[:, np.newaxis]  # K_ij * sqrt(h_i)
+    H_data = K_weighted.T @ K_weighted
+
+    # Regularization Hessian: 2 * lambda * K
+    H_reg = 2 * reg * K_matrix
+
+    # Boundary Hessian (zero at feasible solution where 0 <= alpha <= 1)
+    # b_i = 2 if alpha_i > 1 or alpha_i < 0, else 0
+    b_i = np.zeros(n)
+    b_i[alpha_final > 1] = 2
+    b_i[alpha_final < 0] = 2
+    if np.any(b_i > 0):
+        sqrt_b = np.sqrt(b_i)
+        K_bound = K_matrix * sqrt_b[:, np.newaxis]
+        H_bound = bnd * K_bound.T @ K_bound
+    else:
+        H_bound = np.zeros((n, n))
+
+    H = H_data + H_reg + H_bound
+
+    return c, H, alpha_final
+
+
+def compute_posterior_variance(H, K_train, K_test_train):
+    """
+    Compute posterior variance at test locations using Laplace approximation.
+
+    Parameters
+    ----------
+    H : np.ndarray (n_train, n_train)
+        Hessian matrix at MAP estimate
+    K_train : np.ndarray (n_train, n_train)
+        Kernel matrix for training points
+    K_test_train : np.ndarray (n_test, n_train)
+        Cross-kernel matrix from test to training points
+
+    Returns
+    -------
+    posterior_var : np.ndarray (n_test,)
+        Posterior variance at each test location
+    """
+    n_test = K_test_train.shape[0]
+
+    # Add small regularization for numerical stability
+    H_reg = H + 1e-6 * np.eye(H.shape[0])
+
+    try:
+        # Cholesky factorization: H = L L^T
+        L = np.linalg.cholesky(H_reg)
+
+        # For each test point: var = k^T H^{-1} k
+        # Solve L v = k, then var = v^T v
+        posterior_var = np.zeros(n_test)
+        for i in range(n_test):
+            k_i = K_test_train[i, :]
+            v = np.linalg.solve(L, k_i)
+            posterior_var[i] = np.dot(v, v)
+
+    except np.linalg.LinAlgError:
+        # Fallback to direct solve if Cholesky fails
+        print("    Warning: Cholesky failed, using direct solve")
+        try:
+            H_inv = np.linalg.inv(H_reg)
+            posterior_var = np.array([K_test_train[i, :] @ H_inv @ K_test_train[i, :]
+                                       for i in range(n_test)])
+        except:
+            # Last resort: return prior variance
+            print("    Warning: Matrix inversion failed, returning prior variance")
+            posterior_var = np.ones(n_test) * 0.25  # Default uncertainty
+
+    return np.clip(posterior_var, 0, None)  # Ensure non-negative
+
+
 class GlobalFDRRegressor:
     """Stage 2: Global Inference using Natural Gradient KLR."""
 
@@ -432,7 +551,7 @@ def run_experiment(X, p_values, true_labels, sigma, train_indices, test_indices,
     """
     Run inference with given train/test split.
 
-    Returns predictions on test set.
+    Returns predictions on test set with confidence intervals.
     """
     X_tr = X[train_indices]
     X_te = X[test_indices]
@@ -459,9 +578,9 @@ def run_experiment(X, p_values, true_labels, sigma, train_indices, test_indices,
     # Compute kernel matrices
     K_tr = compute_kernel_matrix(X_tr, length_scale=sigma)
 
-    # Stage 1: Point-wise optimization
-    c_stage1 = run_optimization_stage1(K_tr, f0_tr, f1_tr)
-    alpha_hat_tr = np.clip(K_tr @ c_stage1, 0, 1)
+    # Stage 1: Point-wise optimization WITH Hessian for uncertainty
+    c_stage1, H_stage1, alpha_hat_tr = run_optimization_stage1_with_hessian(K_tr, f0_tr, f1_tr)
+    alpha_hat_tr = np.clip(alpha_hat_tr, 0, 1)
 
     # Stage 2: Global inference
     klr = GlobalFDRRegressor(lambda_global=0.1, lr=0.005, max_iter=2000)
@@ -469,8 +588,16 @@ def run_experiment(X, p_values, true_labels, sigma, train_indices, test_indices,
 
     # Predict on test set
     dist_te = cdist(X_te, X_tr, 'sqeuclidean')
-    K_te = np.exp(-dist_te / (2 * sigma**2))
-    alpha_pred_te = klr.predict(K_te)
+    K_te_tr = np.exp(-dist_te / (2 * sigma**2))
+    alpha_pred_te = klr.predict(K_te_tr)
+
+    # Compute posterior variance (confidence intervals) at test locations
+    posterior_var = compute_posterior_variance(H_stage1, K_tr, K_te_tr)
+    posterior_std = np.sqrt(posterior_var)
+
+    # 95% credible intervals (approximately 2 standard deviations)
+    alpha_ci_lower = np.clip(alpha_pred_te - 2 * posterior_std, 0, 1)
+    alpha_ci_upper = np.clip(alpha_pred_te + 2 * posterior_std, 0, 1)
 
     # Also compute lfdr on test set for comparison
     f0_te = f0_func(p_values[test_indices])
@@ -479,6 +606,10 @@ def run_experiment(X, p_values, true_labels, sigma, train_indices, test_indices,
 
     return {
         'alpha_pred': alpha_pred_te,
+        'alpha_std': posterior_std,
+        'alpha_ci_lower': alpha_ci_lower,
+        'alpha_ci_upper': alpha_ci_upper,
+        'posterior_var': posterior_var,
         'lfdr': lfdr_te,
         'test_indices': test_indices,
         'train_indices': train_indices,

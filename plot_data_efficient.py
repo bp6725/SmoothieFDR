@@ -41,6 +41,321 @@ def safe_logit(alpha, eps=1e-6):
     return np.log(alpha_clipped / (1 - alpha_clipped))
 
 
+# ============================================================================
+# CONFIDENCE INTERVAL VISUALIZATIONS
+# ============================================================================
+
+def plot_scatter_with_ci(results_dict, save_path=None):
+    """
+    Scatter plot of predicted alpha vs oracle alpha with confidence intervals.
+
+    Shows error bars representing 95% credible intervals.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+
+    for idx, (method_key, method_name, color) in enumerate([
+        ('result_random', 'Random Sampling (70%)', 'red'),
+        ('result_aopt', 'A-Optimal Sampling (70%)', 'blue')
+    ]):
+        ax = axes[idx]
+
+        all_alpha_oracle = []
+        all_alpha_pred = []
+        all_alpha_std = []
+
+        for ds_name, res in results_dict.items():
+            result = res[method_key]
+            test_idx = result['test_indices']
+            alpha_pred = result['alpha_pred']
+            alpha_oracle = res['alpha_oracle'][test_idx]
+
+            # Get uncertainty (std) if available
+            if 'alpha_std' in result:
+                alpha_std = result['alpha_std']
+            else:
+                alpha_std = np.zeros_like(alpha_pred)
+
+            all_alpha_oracle.extend(alpha_oracle)
+            all_alpha_pred.extend(alpha_pred)
+            all_alpha_std.extend(alpha_std)
+
+        all_alpha_oracle = np.array(all_alpha_oracle)
+        all_alpha_pred = np.array(all_alpha_pred)
+        all_alpha_std = np.array(all_alpha_std)
+
+        # Subsample for clearer visualization (if too many points)
+        if len(all_alpha_oracle) > 200:
+            idx_sample = np.random.choice(len(all_alpha_oracle), 200, replace=False)
+        else:
+            idx_sample = np.arange(len(all_alpha_oracle))
+
+        # Plot with error bars
+        ax.errorbar(all_alpha_oracle[idx_sample], all_alpha_pred[idx_sample],
+                    yerr=2*all_alpha_std[idx_sample],  # 95% CI
+                    fmt='o', color=color, alpha=0.5, markersize=5,
+                    ecolor=color, elinewidth=1, capsize=2)
+
+        # Perfect prediction line
+        ax.plot([0, 1], [0, 1], 'k--', linewidth=2, label='Perfect prediction')
+
+        ax.set_xlabel('Oracle alpha')
+        ax.set_ylabel('Predicted alpha')
+        ax.set_title(method_name, fontweight='bold')
+        ax.legend(loc='upper left')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+    fig.suptitle('Prediction with 95% Credible Intervals',
+                 fontsize=18, fontweight='bold', y=1.02)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
+
+def plot_uncertainty_comparison(results_dict, save_path=None):
+    """
+    Compare posterior uncertainty (std) between random and A-optimal sampling.
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    all_std_random = []
+    all_std_aopt = []
+
+    for ds_name, res in results_dict.items():
+        if 'alpha_std' in res['result_random']:
+            all_std_random.extend(res['result_random']['alpha_std'])
+        if 'alpha_std' in res['result_aopt']:
+            all_std_aopt.extend(res['result_aopt']['alpha_std'])
+
+    all_std_random = np.array(all_std_random)
+    all_std_aopt = np.array(all_std_aopt)
+
+    # Left: Histogram of uncertainties
+    ax1 = axes[0]
+    ax1.hist(all_std_random, bins=30, alpha=0.6, color='red', label='Random', density=True)
+    ax1.hist(all_std_aopt, bins=30, alpha=0.6, color='blue', label='A-Optimal', density=True)
+    ax1.axvline(np.mean(all_std_random), color='red', linestyle='--', linewidth=2)
+    ax1.axvline(np.mean(all_std_aopt), color='blue', linestyle='--', linewidth=2)
+    ax1.set_xlabel('Posterior Std (σ)')
+    ax1.set_ylabel('Density')
+    ax1.set_title('Distribution of Prediction Uncertainty', fontweight='bold')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    # Middle: Box plot by dataset
+    ax2 = axes[1]
+    datasets = list(results_dict.keys())
+    std_random_by_ds = []
+    std_aopt_by_ds = []
+
+    for ds_name in datasets:
+        res = results_dict[ds_name]
+        if 'alpha_std' in res['result_random']:
+            std_random_by_ds.append(np.mean(res['result_random']['alpha_std']))
+        else:
+            std_random_by_ds.append(0)
+        if 'alpha_std' in res['result_aopt']:
+            std_aopt_by_ds.append(np.mean(res['result_aopt']['alpha_std']))
+        else:
+            std_aopt_by_ds.append(0)
+
+    x = np.arange(len(datasets))
+    width = 0.35
+    ax2.bar(x - width/2, std_random_by_ds, width, label='Random', color='red', alpha=0.7)
+    ax2.bar(x + width/2, std_aopt_by_ds, width, label='A-Optimal', color='blue', alpha=0.7)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels([d[:10] for d in datasets], rotation=45, ha='right')
+    ax2.set_ylabel('Mean Posterior Std')
+    ax2.set_title('Mean Uncertainty by Dataset', fontweight='bold')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3, axis='y')
+
+    # Right: Summary statistics
+    ax3 = axes[2]
+    ax3.axis('off')
+
+    summary_text = f"""
+    Uncertainty Comparison Summary
+    {'='*40}
+
+    Random Sampling:
+      Mean σ: {np.mean(all_std_random):.4f}
+      Median σ: {np.median(all_std_random):.4f}
+      Max σ: {np.max(all_std_random):.4f}
+
+    A-Optimal Sampling:
+      Mean σ: {np.mean(all_std_aopt):.4f}
+      Median σ: {np.median(all_std_aopt):.4f}
+      Max σ: {np.max(all_std_aopt):.4f}
+
+    {'='*40}
+    Improvement: {(1 - np.mean(all_std_aopt)/np.mean(all_std_random))*100:.1f}%
+    lower mean uncertainty with A-Optimal
+    """
+
+    ax3.text(0.1, 0.5, summary_text, fontsize=12, family='monospace',
+             verticalalignment='center', transform=ax3.transAxes)
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
+
+def plot_calibration(results_dict, save_path=None):
+    """
+    Calibration plot: Check if 95% CI actually covers ~95% of true values.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    for idx, (method_key, method_name, color) in enumerate([
+        ('result_random', 'Random Sampling', 'red'),
+        ('result_aopt', 'A-Optimal Sampling', 'blue')
+    ]):
+        ax = axes[idx]
+
+        coverage_by_level = []
+        levels = [0.5, 0.68, 0.80, 0.90, 0.95, 0.99]
+        multipliers = [0.67, 1.0, 1.28, 1.64, 2.0, 2.58]  # z-scores
+
+        all_alpha_oracle = []
+        all_alpha_pred = []
+        all_alpha_std = []
+
+        for ds_name, res in results_dict.items():
+            result = res[method_key]
+            test_idx = result['test_indices']
+            alpha_pred = result['alpha_pred']
+            alpha_oracle = res['alpha_oracle'][test_idx]
+
+            if 'alpha_std' in result:
+                alpha_std = result['alpha_std']
+            else:
+                alpha_std = np.ones_like(alpha_pred) * 0.1  # Default
+
+            all_alpha_oracle.extend(alpha_oracle)
+            all_alpha_pred.extend(alpha_pred)
+            all_alpha_std.extend(alpha_std)
+
+        all_alpha_oracle = np.array(all_alpha_oracle)
+        all_alpha_pred = np.array(all_alpha_pred)
+        all_alpha_std = np.array(all_alpha_std)
+
+        # Compute coverage at each level
+        for level, mult in zip(levels, multipliers):
+            ci_lower = all_alpha_pred - mult * all_alpha_std
+            ci_upper = all_alpha_pred + mult * all_alpha_std
+            covered = (all_alpha_oracle >= ci_lower) & (all_alpha_oracle <= ci_upper)
+            coverage_by_level.append(np.mean(covered))
+
+        # Plot calibration curve
+        ax.plot(levels, coverage_by_level, 'o-', color=color, linewidth=2, markersize=8)
+        ax.plot([0, 1], [0, 1], 'k--', linewidth=1.5, label='Perfect calibration')
+
+        ax.set_xlabel('Nominal Coverage Level')
+        ax.set_ylabel('Empirical Coverage')
+        ax.set_title(f'{method_name}\nCalibration', fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0.4, 1.0)
+        ax.set_ylim(0.4, 1.0)
+
+        # Add annotation for 95% level
+        idx_95 = levels.index(0.95)
+        ax.annotate(f'95% CI: {coverage_by_level[idx_95]:.1%}',
+                   xy=(0.95, coverage_by_level[idx_95]),
+                   xytext=(0.7, coverage_by_level[idx_95] + 0.1),
+                   arrowprops=dict(arrowstyle='->', color=color),
+                   fontsize=11, color=color)
+
+    fig.suptitle('Confidence Interval Calibration', fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
+
+def plot_scatter_with_ci_by_uncertainty(results_dict, save_path=None):
+    """
+    Scatter plot colored by uncertainty level.
+
+    Points with high uncertainty should have larger errors.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+
+    for idx, (method_key, method_name) in enumerate([
+        ('result_random', 'Random Sampling (70%)'),
+        ('result_aopt', 'A-Optimal Sampling (70%)')
+    ]):
+        ax = axes[idx]
+
+        all_alpha_oracle = []
+        all_alpha_pred = []
+        all_alpha_std = []
+        all_errors = []
+
+        for ds_name, res in results_dict.items():
+            result = res[method_key]
+            test_idx = result['test_indices']
+            alpha_pred = result['alpha_pred']
+            alpha_oracle = res['alpha_oracle'][test_idx]
+
+            if 'alpha_std' in result:
+                alpha_std = result['alpha_std']
+            else:
+                alpha_std = np.zeros_like(alpha_pred)
+
+            errors = np.abs(alpha_pred - alpha_oracle)
+
+            all_alpha_oracle.extend(alpha_oracle)
+            all_alpha_pred.extend(alpha_pred)
+            all_alpha_std.extend(alpha_std)
+            all_errors.extend(errors)
+
+        all_alpha_std = np.array(all_alpha_std)
+        all_errors = np.array(all_errors)
+        all_alpha_oracle = np.array(all_alpha_oracle)
+        all_alpha_pred = np.array(all_alpha_pred)
+
+        # Scatter colored by uncertainty
+        scatter = ax.scatter(all_alpha_oracle, all_alpha_pred,
+                            c=all_alpha_std, cmap='YlOrRd', s=30, alpha=0.6,
+                            vmin=0, vmax=np.percentile(all_alpha_std, 95))
+
+        ax.plot([0, 1], [0, 1], 'k--', linewidth=2)
+
+        ax.set_xlabel('Oracle alpha')
+        ax.set_ylabel('Predicted alpha')
+        ax.set_title(method_name, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label('Posterior Std (σ)')
+
+    fig.suptitle('Predictions Colored by Uncertainty',
+                 fontsize=18, fontweight='bold', y=1.02)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
+
 def plot_logit_alpha_vs_lfdr_scatter(results_dict, save_path=None):
     """
     Main visualization: Scatter plot of log(alpha/(1-alpha)) vs oracle lfdr.
@@ -430,8 +745,41 @@ def generate_all_plots(results_dict, output_dir, show=False):
     )
     print("  - Summary statistics: done")
 
+    # ========================================================================
+    # CONFIDENCE INTERVAL PLOTS
+    # ========================================================================
+    print("\nGenerating confidence interval plots...")
+
+    # Scatter with error bars (95% CI)
+    plot_scatter_with_ci(
+        results_dict,
+        save_path=os.path.join(output_dir, 'scatter_with_ci.png') if not show else None
+    )
+    print("  - Scatter with confidence intervals: done")
+
+    # Uncertainty comparison
+    plot_uncertainty_comparison(
+        results_dict,
+        save_path=os.path.join(output_dir, 'uncertainty_comparison.png') if not show else None
+    )
+    print("  - Uncertainty comparison: done")
+
+    # Calibration plot
+    plot_calibration(
+        results_dict,
+        save_path=os.path.join(output_dir, 'calibration.png') if not show else None
+    )
+    print("  - Calibration plot: done")
+
+    # Scatter colored by uncertainty
+    plot_scatter_with_ci_by_uncertainty(
+        results_dict,
+        save_path=os.path.join(output_dir, 'scatter_by_uncertainty.png') if not show else None
+    )
+    print("  - Scatter colored by uncertainty: done")
+
     # Per-dataset plots
-    print("  - Generating per-dataset plots...")
+    print("\nGenerating per-dataset plots...")
     plot_per_dataset_scatter(results_dict, output_dir, show=show)
     print("  - Per-dataset plots: done")
 
