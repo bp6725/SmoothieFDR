@@ -15,7 +15,7 @@ Reference: "Spatially Smooth Bayesian FDR via Reproducing Kernels"
 """
 
 import numpy as np
-from typing import Optional, Dict, Tuple, Literal, Callable
+from typing import Optional, Dict, Tuple, Literal, Callable, Union
 from dataclasses import dataclass, field
 
 
@@ -124,7 +124,7 @@ class PointwiseOptimizer:
 
     def __init__(
         self,
-        config: OptimizerConfig | str = 'default',
+        config: Union[OptimizerConfig, str] = 'default',
         verbose: bool = False
     ):
         if isinstance(config, str):
