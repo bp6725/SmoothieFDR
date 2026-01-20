@@ -716,16 +716,16 @@ def plot_holdout_comparison(results_dict, save_path=None):
     """
     Fair comparison: Both methods evaluated on the SAME held-out test set.
 
-    This is the key comparison showing A-optimal advantage when test set is fixed.
+    Combined scatter plot showing both methods on the same axes for direct comparison.
     """
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+    fig, ax = plt.subplots(figsize=(12, 10))
 
-    for idx, (method_key, method_name, color) in enumerate([
-        ('result_random_holdout', 'Random Sampling (70%)', 'red'),
-        ('result_aopt_holdout', 'A-Optimal Sampling (70%)', 'blue')
-    ]):
-        ax = axes[idx]
+    mse_values = {}
 
+    for method_key, method_name, color in [
+        ('result_random_holdout', 'Random (70%)', 'red'),
+        ('result_aopt_holdout', 'A-Optimal (70%)', 'blue')
+    ]:
         all_alpha_oracle = []
         all_alpha_pred = []
         all_alpha_std = []
@@ -750,14 +750,15 @@ def plot_holdout_comparison(results_dict, save_path=None):
             all_alpha_std.extend(alpha_std)
 
         if len(all_alpha_oracle) == 0:
-            ax.text(0.5, 0.5, 'No holdout data\n(re-run main_data_efficient.py)',
-                    ha='center', va='center', transform=ax.transAxes, fontsize=14)
-            ax.set_title(method_name, fontweight='bold')
             continue
 
         all_alpha_oracle = np.array(all_alpha_oracle)
         all_alpha_pred = np.array(all_alpha_pred)
         all_alpha_std = np.array(all_alpha_std)
+
+        # Compute MSE
+        mse = np.mean((all_alpha_pred - all_alpha_oracle)**2)
+        mse_values[method_name] = mse
 
         # Subsample for clearer visualization
         if len(all_alpha_oracle) > 200:
@@ -768,27 +769,29 @@ def plot_holdout_comparison(results_dict, save_path=None):
         # Plot with error bars
         ax.errorbar(all_alpha_oracle[idx_sample], all_alpha_pred[idx_sample],
                     yerr=2*all_alpha_std[idx_sample],
-                    fmt='o', color=color, alpha=0.5, markersize=5,
-                    ecolor=color, elinewidth=1, capsize=2)
+                    fmt='o', color=color, alpha=0.4, markersize=6,
+                    ecolor=color, elinewidth=1, capsize=2,
+                    label=f'{method_name} (MSE: {mse:.4f})')
 
+    if not mse_values:
+        ax.text(0.5, 0.5, 'No holdout data\n(re-run main_data_efficient.py)',
+                ha='center', va='center', transform=ax.transAxes, fontsize=14)
+    else:
+        # Perfect prediction line
         ax.plot([0, 1], [0, 1], 'k--', linewidth=2, label='Perfect prediction')
+
+        # Decision threshold line
         ax.axhline(0.5, color='black', linewidth=3, linestyle='-', label='Decision threshold')
 
-        # Compute MSE for annotation
-        mse = np.mean((all_alpha_pred - all_alpha_oracle)**2)
-        ax.annotate(f'MSE: {mse:.4f}', xy=(0.05, 0.95), xycoords='axes fraction',
-                    fontsize=12, fontweight='bold', color=color)
+    ax.set_xlabel('Oracle alpha', fontsize=14)
+    ax.set_ylabel('Predicted alpha', fontsize=14)
+    ax.set_title('Fair Comparison: Same Held-Out Test Set (20%)',
+                 fontsize=16, fontweight='bold')
+    ax.legend(loc='upper left', fontsize=11)
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
 
-        ax.set_xlabel('Oracle alpha')
-        ax.set_ylabel('Predicted alpha')
-        ax.set_title(method_name, fontweight='bold')
-        ax.legend(loc='lower right')
-        ax.grid(True, alpha=0.3)
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-
-    fig.suptitle('Fair Comparison: Same Held-Out Test Set (20%)',
-                 fontsize=18, fontweight='bold', y=1.02)
     plt.tight_layout()
 
     if save_path:
