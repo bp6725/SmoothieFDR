@@ -175,9 +175,9 @@ def plot_rejection_comparison(results_df, save_path=None):
 
 def plot_combined_loss_convergence(histories, save_path=None):
     """
-    Global loss convergence across all datasets.
+    Global loss convergence across all datasets (normalized).
 
-    Shows optimization loss curves for all datasets on one figure.
+    Shows normalized optimization loss curves for all datasets on one figure.
     """
     # Filter out empty histories
     valid_histories = {k: v for k, v in histories.items() if v and v.get('losses')}
@@ -185,41 +185,23 @@ def plot_combined_loss_convergence(histories, save_path=None):
         print("No valid optimization histories to plot")
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+    plt.figure(figsize=(12, 8))
     colors = plt.cm.tab10(np.linspace(0, 1, min(10, len(valid_histories))))
 
-    # Left: Raw loss values (log scale)
-    ax1 = axes[0]
-    for (ds_name, history), color in zip(valid_histories.items(), colors):
-        losses = history['losses']
-        iterations = np.arange(len(losses)) * 50  # log_interval assumed 50
-        short_name = ds_name.split('/')[-1][:12] if '/' in ds_name else ds_name[:12]
-        ax1.plot(iterations, losses, '-', linewidth=2, color=color, label=short_name)
-
-    ax1.set_xlabel('Iteration')
-    ax1.set_ylabel('Loss')
-    ax1.set_title('Loss Convergence (Raw)', fontweight='bold')
-    ax1.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=10)
-    ax1.grid(True, alpha=0.3)
-    ax1.set_yscale('log')
-
-    # Right: Normalized loss (relative to initial)
-    ax2 = axes[1]
     for (ds_name, history), color in zip(valid_histories.items(), colors):
         losses = np.array(history['losses'])
-        iterations = np.arange(len(losses)) * 50
+        iterations = np.arange(len(losses)) * 50  # log_interval assumed 50
         # Normalize: (loss - min) / (initial - min)
         loss_norm = (losses - losses.min()) / (losses[0] - losses.min() + 1e-10)
         short_name = ds_name.split('/')[-1][:12] if '/' in ds_name else ds_name[:12]
-        ax2.plot(iterations, loss_norm, '-', linewidth=2, color=color, label=short_name)
+        plt.plot(iterations, loss_norm, '-', linewidth=2, color=color, label=short_name)
 
-    ax2.set_xlabel('Iteration')
-    ax2.set_ylabel('Normalized Loss')
-    ax2.set_title('Loss Convergence (Normalized)', fontweight='bold')
-    ax2.grid(True, alpha=0.3)
-    ax2.set_ylim(-0.05, 1.05)
-
-    fig.suptitle('Global Loss Convergence - GSEA Benchmark', fontsize=18, fontweight='bold', y=1.02)
+    plt.xlabel('Iteration')
+    plt.ylabel('Normalized Loss')
+    plt.title('Global Loss Convergence - GSEA Benchmark', fontsize=18, fontweight='bold')
+    plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.ylim(-0.05, 1.05)
     plt.tight_layout()
 
     if save_path:
