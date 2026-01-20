@@ -48,7 +48,7 @@ def plot_cv_results(sigma_grid, cv_scores, best_sigma, dataset_name, save_path=N
     plt.legend()
     plt.grid(True, alpha=0.3)
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
     else:
         plt.show()
@@ -224,28 +224,31 @@ def plot_spatial_adaptation_per_group(iso_h1, iso_h0, alpha_values, group_ids, d
 
 def plot_combined_alpha_convergence(results_dict, save_path=None):
     """Combined alpha convergence across all datasets."""
-    plt.figure(figsize=(16, 10))
+    plt.figure(figsize=(10, 10))
     colors = plt.cm.tab10(np.linspace(0, 1, len(results_dict)))
 
     for (ds_name, res), color in zip(results_dict.items(), colors):
         hist = res['history']
-        iters = np.linspace(0, len(hist['losses']), len(hist['alpha_history']))
-        plt.plot(iters, [a.mean() for a in hist['alpha_history']], '-', linewidth=3, color=color, label=f"{ds_name} (Mean)")
-        plt.plot(iters, [a.min() for a in hist['alpha_history']], '--', linewidth=2, color=color, alpha=0.6)
-        plt.plot(iters, [a.max() for a in hist['alpha_history']], ':', linewidth=2, color=color, alpha=0.6)
+        alpha_hist = hist['alpha_history'][0:1000]
+        iters = np.linspace(0, 1000, len(alpha_hist))
+        plt.plot(iters, [a.mean() for a in alpha_hist], '-', linewidth=3, color=color, label=f"{ds_name} (Mean)")
+        plt.plot(iters, [a.min() for a in alpha_hist], '--', linewidth=2, color=color, alpha=0.6)
+        plt.plot(iters, [a.max() for a in alpha_hist], ':', linewidth=2, color=color, alpha=0.6)
 
     plt.axhline(0, color='k')
     plt.axhline(1, color='k')
-    plt.title('Combined Alpha Convergence', fontweight='bold')
-    plt.xlabel('Iteration')
-    plt.ylabel('Alpha')
-    plt.legend(bbox_to_anchor=(1.02, 1))
+    plt.title('Alpha Convergence', fontweight='bold',fontsize = 36)
+    plt.xlabel('Iteration',fontsize = 24)
+    plt.ylabel('Alpha',fontsize = 24)
+    # plt.legend(bbox_to_anchor=(1.02, 1))
+    plt.legend(bbox_to_anchor=(0.8, 1))
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close()
+        print("done")
     else:
         plt.show()
 
@@ -384,42 +387,43 @@ def generate_all_plots(results_dict, output_dir, show=False):
     """Generate all visualizations from cached results."""
     os.makedirs(output_dir, exist_ok=True)
 
-    print("Generating per-dataset plots...")
-    for ds_name, res in results_dict.items():
-        ds_dir = os.path.join(output_dir, ds_name)
-        os.makedirs(ds_dir, exist_ok=True)
+    if False :
+        print("Generating per-dataset plots...")
+        for ds_name, res in results_dict.items():
+            ds_dir = os.path.join(output_dir, ds_name)
+            os.makedirs(ds_dir, exist_ok=True)
 
-        # CV Results
-        plot_cv_results(
-            res['sigma_grid'], res['cv_scores'], res['best_sigma_factor'], ds_name,
-            save_path=os.path.join(ds_dir, 'cv_results.png') if not show else None
-        )
+            # CV Results
+            plot_cv_results(
+                res['sigma_grid'], res['cv_scores'], res['best_sigma_factor'], ds_name,
+                save_path=os.path.join(ds_dir, 'cv_results.png') if not show else None
+            )
 
-        # Optimization History
-        plot_optimization_history(
-            res['history'], ds_name,
-            save_path=os.path.join(ds_dir, 'optimization_history.png') if not show else None
-        )
+            # Optimization History
+            plot_optimization_history(
+                res['history'], ds_name,
+                save_path=os.path.join(ds_dir, 'optimization_history.png') if not show else None
+            )
 
-        # Confusion Clustermap
-        plot_confusion_clustermap(
-            res['K_final'], res['true_labels'], res['rejections'], ds_name,
-            save_path=os.path.join(ds_dir, 'confusion_clustermap.png') if not show else None
-        )
+            # Confusion Clustermap
+            plot_confusion_clustermap(
+                res['K_final'], res['true_labels'], res['rejections'], ds_name,
+                save_path=os.path.join(ds_dir, 'confusion_clustermap.png') if not show else None
+            )
 
-        # Geometric Failure Dual
-        plot_geometric_failure_dual(
-            res['iso_h1'], res['iso_h0'], res['p_values'], res['rejections'], res['true_labels'], ds_name,
-            save_path=os.path.join(ds_dir, 'geometric_failure.png') if not show else None
-        )
+            # Geometric Failure Dual
+            plot_geometric_failure_dual(
+                res['iso_h1'], res['iso_h0'], res['p_values'], res['rejections'], res['true_labels'], ds_name,
+                save_path=os.path.join(ds_dir, 'geometric_failure.png') if not show else None
+            )
 
-        # Spatial Adaptation
-        plot_spatial_adaptation_per_group(
-            res['iso_h1'], res['iso_h0'], res['alpha_final'], res['final_group_ids'], ds_name,
-            save_path=os.path.join(ds_dir, 'spatial_adaptation.png') if not show else None
-        )
+            # Spatial Adaptation
+            plot_spatial_adaptation_per_group(
+                res['iso_h1'], res['iso_h0'], res['alpha_final'], res['final_group_ids'], ds_name,
+                save_path=os.path.join(ds_dir, 'spatial_adaptation.png') if not show else None
+            )
 
-        print(f"  - {ds_name}: done")
+            print(f"  - {ds_name}: done")
 
     print("\nGenerating combined plots...")
 
@@ -454,7 +458,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Generate visualizations from bench_cv results')
     parser.add_argument('--cache', default=os.path.join(CACHE_DIR, CACHE_FILE), help='Path to cache file')
     parser.add_argument('--output_dir', default=OUTPUT_DIR, help='Output directory for figures')
-    parser.add_argument('--show', action='store_true', help='Show plots instead of saving')
+    parser.add_argument('--show',default=False, action='store_true', help='Show plots instead of saving')
     args = parser.parse_args()
 
     print(f"Loading cache from: {args.cache}")
