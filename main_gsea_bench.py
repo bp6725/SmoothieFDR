@@ -1,27 +1,32 @@
+"""
+GSEA Benchmark: Point-wise FDR on Gene Set Enrichment Analysis
+
+This script runs the Spatial FDR method on GSEA benchmarks using graph diffusion kernels.
+Results are saved to cache for separate visualization.
+
+REFACTOR: Results saved to cache for separate visualization (use plot_gsea_bench.py).
+"""
+
 import pickle
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 from scipy.stats import hypergeom, norm
 from statsmodels.stats.multitest import multipletests
-import matplotlib.pyplot as plt
-import seaborn as sns
 import networkx as nx
 import warnings
 import sys
 import os
-import traceback
 from sklearn.model_selection import KFold
 from sklearn.metrics import roc_auc_score
 from scipy.linalg import eigvalsh
-import itertools
-# --- CONFIGURATION ---
-plt.rcParams.update({
-    'font.size': 14, 'axes.labelsize': 16, 'axes.titlesize': 18,
-    'xtick.labelsize': 12, 'ytick.labelsize': 12, 'legend.fontsize': 12,
-    'figure.titlesize': 20, 'lines.linewidth': 2, 'grid.alpha': 0.4
-})
 
+# --- PATH SETUP ---
+sys.path.insert(0, os.path.abspath('.'))
+
+# --- CACHE CONFIGURATION ---
+CACHE_DIR = "/home/benny/Repos/SmoothieFDR/results/cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 # ============================================================================
 # 0. VALIDATORS
@@ -33,17 +38,15 @@ class KernelValidator:
         """
         Checks if the Graph has good cluster structure (Spectral Gap).
         """
-        # Inside main_gsea_bench.py, before line 349 (before validate_structure is called)
         print(f"DEBUG: K statistics - Min: {K.min()}, Max: {K.max()}, Has NaNs: {np.isnan(K).any()}")
 
         if np.isnan(K).any() or np.isinf(K).any():
             print("CRITICAL: Kernel matrix contains NaNs or Infs! Fixing with 0 replacement...")
-            K = np.nan_to_num(K)  # Replace NaN with 0 and Inf with large numbers
+            K = np.nan_to_num(K)
 
-        # Quick estimation of top 5 eigenvalues
         all_vals = np.linalg.eigvalsh(K)
         vals = all_vals[-5:]
-        vals = np.sort(vals)[::-1]  # Sort descending
+        vals = np.sort(vals)[::-1]
 
         lambda_1 = vals[0] if vals[0] > 0 else 1e-10
         lambda_2 = vals[1]
@@ -54,14 +57,12 @@ class KernelValidator:
 
         if ratio > 0.99:
             print("    -> Graph has very strong, nearly disconnected clusters.")
-            # Check how many eigenvalues are effectively 1.0
             num_components = np.sum(np.isclose(all_vals, 1.0))
             print(f"Number of disconnected clusters: {num_components}")
             print(f"Total nodes: {len(all_vals)}")
 
             if num_components > (len(all_vals) * 0.9):
-                print(
-                    "WARNING: Graph is shattered (too many tiny clusters). Tuning might be picking too narrow a kernel.")
+                print("WARNING: Graph is shattered (too many tiny clusters).")
                 return False
             else:
                 print("SUCCESS: Meaningful cluster structure detected.")
@@ -73,22 +74,16 @@ class KernelValidator:
             print("    -> Graph has moderate structure.")
             return True
 
-
     @staticmethod
     def validate_signal_alignment(adj_matrix, p_values, n_perms=100):
-        """
-        Checks if the P-values actually cluster on the graph (Moran's I / permutation).
-        """
-        # 1. Transform p-values to Z-scores
+        """Checks if the P-values actually cluster on the graph (Moran's I / permutation)."""
         p_clipped = np.clip(p_values, 1e-10, 1 - 1e-10)
         z_scores = norm.ppf(1 - p_clipped)
         z_scores = np.nan_to_num(z_scores)
 
-        # 2. Moran's I numerator: z.T * W * z
         z_centered = z_scores - np.mean(z_scores)
         obs_score = z_centered.T @ adj_matrix @ z_centered
 
-        # 3. Permutation Test
         perm_scores = []
         for _ in range(n_perms):
             z_perm = np.random.permutation(z_centered)
@@ -117,11 +112,8 @@ class KernelValidator:
 
 def optimize_pointwise(K, p_values, f0, f1, lambda_reg=10.0, lambda_bound=500.0,
                        learning_rate=0.05, max_iter=15000, tol=1e-6):
-    """
-    Vanilla Natural Gradient Descent (CPU/NumPy) with history tracking.
-    """
+    """Vanilla Natural Gradient Descent (CPU/NumPy) with history tracking."""
     n = K.shape[0]
-    # Initialize c so that alpha starts near 1.0
     c = np.ones(n) * (1.0 / (K.sum(axis=1).mean() + 1e-10))
 
     history = {
@@ -132,12 +124,10 @@ def optimize_pointwise(K, p_values, f0, f1, lambda_reg=10.0, lambda_bound=500.0,
     }
 
     for t in range(max_iter):
-        # Forward pass
         alpha = K @ c
         mix = alpha * f0 + (1 - alpha) * f1
         mix = np.clip(mix, 1e-12, None)
 
-        # Gradients
         grad_nll = -(f0 - f1) / mix
         grad_upper = np.maximum(0, alpha - 1)
         grad_lower = np.maximum(0, -alpha)
@@ -146,14 +136,12 @@ def optimize_pointwise(K, p_values, f0, f1, lambda_reg=10.0, lambda_bound=500.0,
 
         grad_total = grad_nll + grad_bound + grad_reg
 
-        # Clipping
         gnorm = np.linalg.norm(grad_total)
         if gnorm > 5.0:
             grad_total = grad_total * (5.0 / gnorm)
 
         c -= learning_rate * grad_total
 
-        # Logging (every 50 iterations)
         if t % 50 == 0:
             loss = -np.sum(np.log(mix)) + lambda_reg * (c @ K @ c)
             history['losses'].append(loss)
@@ -173,125 +161,56 @@ def optimize_pointwise(K, p_values, f0, f1, lambda_reg=10.0, lambda_bound=500.0,
 
 class HyperparameterTuner:
     @staticmethod
-    def tune_lambda(p_values,ppi, f0, f1, param_grid=None, n_folds=3, dataset_name="Dataset"):
-        """
-        Performs K-Fold CV to find the best lambda_reg on the NLL.
-        """
+    def tune_lambda(p_values, ppi, f0, f1, param_grid=None, n_folds=3, dataset_name="Dataset"):
+        """Performs K-Fold CV to find the best lambda_reg on the NLL."""
         if param_grid is None:
             param_grid = list(np.logspace(-15, 20, 15))
-            # Moving beta_grid definition here as in your original code
-            beta_grid = [2]
-        else:
-            # Fallback if param_grid is provided but beta_grid isn't defined in scope
-            beta_grid = [2]
+        beta_grid = [2]
 
         print(f"    Starting HP Tuning (Grid: {param_grid})...")
 
         kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
 
-        # CHANGED: Use a dictionary to store scores separated by beta for plotting
         results_by_beta = {b: [] for b in beta_grid}
-        flat_scores = []  # To keep track of the absolute best
-        flat_params = []  # To keep track of the absolute best
+        flat_scores = []
+        flat_params = []
 
-        # Loop structure kept similar, but organized for the plot
         for bam in beta_grid:
-            # Calculate Kernel once per beta
             K = SpatialFDRGraphKernel(ppi, kernel_type='diffusion', normalized=True, beta=bam).K
 
             for lam in param_grid:
                 fold_nlls = []
                 for train_idx, test_idx in kf.split(p_values):
-                    # Split
                     K_train = K[np.ix_(train_idx, train_idx)]
                     K_test_cross = K[np.ix_(test_idx, train_idx)]
 
                     p_train = p_values[train_idx]
                     f0_train, f1_train = f0[train_idx], f1[train_idx]
 
-                    # Train (Fast iter)
-                    c_train, _ = optimize_pointwise(K_train, p_train, f0_train, f1_train,
-                                                    lambda_reg=lam)
+                    c_train, _ = optimize_pointwise(K_train, p_train, f0_train, f1_train, lambda_reg=lam)
 
-                    # Predict
                     alpha_test = K_test_cross @ c_train
                     alpha_test = np.clip(alpha_test, 0.00001, 0.99999)
 
-                    # Evaluate NLL
                     mix_test = alpha_test * f0[test_idx] + (1 - alpha_test) * f1[test_idx]
                     mix_test = np.clip(mix_test, 1e-5, None)
                     nll = -np.sum(np.log(mix_test))
                     fold_nlls.append(nll)
 
                 mean_score = np.mean(fold_nlls)
-
-                # Store for plotting
                 results_by_beta[bam].append(mean_score)
-
-                # Store for finding best
                 flat_scores.append(mean_score)
                 flat_params.append((lam, bam))
 
-        # Find global best
         best_idx = np.argmin(flat_scores)
         best_lambda, best_beta = flat_params[best_idx]
         print(f"    [Tuning] Best Lambda: {best_lambda} (with Beta: {best_beta})")
 
-        # --- CHANGED: 2D PLOT SECTION ---
-        plt.figure(figsize=(10, 6))
-
-        # Plot a separate line for each beta
-        for bam in beta_grid:
-            plt.plot(param_grid, results_by_beta[bam], 'o-', linewidth=2, label=f'Beta={bam}')
-
-        plt.axvline(best_lambda, color='red', linestyle='--', label=f'Best $\lambda$: {best_lambda:.2e}')
-        plt.xscale('log')
-        plt.xlabel('Lambda')
-        plt.ylabel('CV NLL')
-        plt.title(f'HP Tuning: {dataset_name}')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.show()
-        # --------------------------------
-
-        return best_lambda, best_beta
+        return best_lambda, best_beta, param_grid, results_by_beta
 
 
 # ============================================================================
-# 3. PLOTTING
-# ============================================================================
-
-def plot_optimization_history(history, dataset_name):
-    if not history['losses']: return
-    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-
-    axes[0, 0].plot(history['losses'], 'b-');
-    axes[0, 0].set_title('Total Loss');
-    axes[0, 0].grid(True)
-    axes[0, 1].semilogy(history['grad_norms'], 'r-');
-    axes[0, 1].set_title('Gradient Norm');
-    axes[0, 1].grid(True)
-
-    alphas = history['alpha_history']
-    iters = range(len(alphas))
-    axes[1, 0].plot(iters, [a.mean() for a in alphas], 'g-', label='Mean')
-    axes[1, 0].plot(iters, [a.min() for a in alphas], 'b--', label='Min')
-    axes[1, 0].plot(iters, [a.max() for a in alphas], 'r--', label='Max')
-    axes[1, 0].legend();
-    axes[1, 0].set_title('Alpha Stats');
-    axes[1, 0].set_ylim(-0.2, 1.2);
-    axes[1, 0].grid(True)
-
-    axes[1, 1].plot(history['violations'], 'purple', marker='o');
-    axes[1, 1].set_title('Violations');
-    axes[1, 1].grid(True)
-    fig.suptitle(f"Optimization: {dataset_name}", fontsize=20, y=0.98)
-    plt.tight_layout();
-    plt.show()
-
-
-# ============================================================================
-# 4. KERNEL & METHODS
+# 3. KERNEL & METHODS
 # ============================================================================
 
 class SpatialFDRGraphKernel:
@@ -342,10 +261,8 @@ class FDRMethods:
 
     @staticmethod
     def estimate_densities(p_values):
-        # 1. Null is Uniform
         f0_vals = np.ones_like(p_values)
 
-        # 2. Fit Gaussian to Z-score tail
         p_clipped = np.clip(p_values, 1e-10, 1 - 1e-10)
         z = norm.ppf(1 - p_clipped)
         mask = p_values < 0.2
@@ -360,7 +277,7 @@ class FDRMethods:
         return f0_vals, f1_vals
 
     @staticmethod
-    def smooth_graph_fdr(p_values, adj_matrix, dataset_name, alpha=0.05, lambda_reg=10.0,beta = 2):
+    def smooth_graph_fdr(p_values, adj_matrix, dataset_name, alpha=0.05, lambda_reg=10.0, beta=2):
         n = len(p_values)
         gk = SpatialFDRGraphKernel(adj_matrix, kernel_type='diffusion', normalized=True, beta=beta)
 
@@ -370,23 +287,20 @@ class FDRMethods:
 
         print(f" Finish Validating")
 
-        if not is_graph_valid :
+        if not is_graph_valid:
             return None, None, None, None, None
 
         f0, f1 = FDRMethods.estimate_densities(p_values)
         c_opt, history = optimize_pointwise(gk.K, p_values, f0, f1, lambda_reg=lambda_reg)
 
         alpha_final = gk.K @ c_opt
-        # Tighter clipping as requested
         alpha_final = np.clip(alpha_final, 0.00001, 0.99999)
 
         f0_vals = f0
         f1_vals = f1
 
-        # lfdr calculation
         lfdr = (alpha_final * f0_vals) / (alpha_final * f0_vals + (1 - alpha_final) * f1_vals)
 
-        # Storey's q-value method approximation
         idx = np.argsort(lfdr)
         sorted_lfdr = lfdr[idx]
         q_vals_sorted = np.cumsum(sorted_lfdr) / np.arange(1, len(lfdr) + 1)
@@ -400,7 +314,6 @@ class FDRMethods:
 
         print(f"[{dataset_name}] Rej: {rejections.sum()}")
 
-        # Map q_vals back to original order
         q_values_aligned = np.zeros_like(lfdr)
         q_values_aligned[idx] = q_vals_sorted
 
@@ -409,25 +322,23 @@ class FDRMethods:
 
 class EnrichmentEngine:
     def __init__(self, pathway_dict, all_genes_universe):
-        self.pathway_dict = pathway_dict;
-        self.universe = set(all_genes_universe);
+        self.pathway_dict = pathway_dict
+        self.universe = set(all_genes_universe)
         self.M = len(self.universe)
 
     def test_enrichment(self, selected_genes):
-        selected_set = set(selected_genes).intersection(self.universe);
-        N = len(selected_set);
+        selected_set = set(selected_genes).intersection(self.universe)
+        N = len(selected_set)
         results = []
-        # Calculate enrichment for ALL pathways to enable AUC calculation
+
         for pname, pgenes in self.pathway_dict.items():
-            pset = set(pgenes).intersection(self.universe);
+            pset = set(pgenes).intersection(self.universe)
             n = len(pset)
             if n < 3:
-                # Keep entry but mark insignificant
                 results.append({'pathway': pname, 'pval': 1.0, 'overlap': 0, 'size': n})
                 continue
 
             k = len(selected_set.intersection(pset))
-            # Hypergeometric survival function
             pval = hypergeom.sf(k - 1, self.M, n, N) if k > 0 else 1.0
             results.append({'pathway': pname, 'pval': pval, 'overlap': k, 'size': n})
 
@@ -436,24 +347,27 @@ class EnrichmentEngine:
 
 
 # ============================================================================
-# 5. BENCHMARK RUNNER
+# 4. BENCHMARK RUNNER (NO PLOTTING - RESULTS SAVED TO CACHE)
 # ============================================================================
 
 class BenchmarkRunner:
     def __init__(self, pickle_path):
         print(f"Loading data from {pickle_path}...")
-        with open(pickle_path, 'rb') as f: self.data = pickle.load(f)
+        with open(pickle_path, 'rb') as f:
+            self.data = pickle.load(f)
 
     def align_data(self, ppi, deg_df):
         """Robust Alignment & Deduplication"""
-        if 'ensmb' in deg_df.columns: deg_df = deg_df.set_index('ensmb')
-        if deg_df.index.duplicated().any(): deg_df = deg_df[~deg_df.index.duplicated(keep='first')]
+        if 'ensmb' in deg_df.columns:
+            deg_df = deg_df.set_index('ensmb')
+        if deg_df.index.duplicated().any():
+            deg_df = deg_df[~deg_df.index.duplicated(keep='first')]
 
         if hasattr(ppi, 'nodes'):
-            graph_nodes = list(ppi.nodes());
+            graph_nodes = list(ppi.nodes())
             is_nx = True
         elif isinstance(ppi, pd.DataFrame):
-            graph_nodes = ppi.index.tolist();
+            graph_nodes = ppi.index.tolist()
             is_nx = False
         else:
             return None, None, None
@@ -470,7 +384,8 @@ class BenchmarkRunner:
                 pass
 
         common = sorted(list(set(graph_nodes).intersection(set(data_genes))))
-        if len(common) == 0: return None, None, None
+        if len(common) == 0:
+            return None, None, None
 
         if is_nx:
             adj = nx.to_numpy_array(ppi.subgraph(common), nodelist=common)
@@ -480,7 +395,8 @@ class BenchmarkRunner:
 
     def stratified_subsample(self, p_values, genes, adj_matrix, n_target=5000, n_bins=100):
         N = len(p_values)
-        if N <= n_target: return p_values, genes, adj_matrix
+        if N <= n_target:
+            return p_values, genes, adj_matrix
 
         print(f"    Subsampling {N} -> {n_target} genes...")
         df = pd.DataFrame({'p': p_values, 'idx': range(N)})
@@ -490,24 +406,31 @@ class BenchmarkRunner:
             df['bin'] = pd.qcut(df['p'].rank(method='first'), q=n_bins, labels=False)
 
         samples_per_bin = n_target // n_bins
-        s_idx = df.groupby('bin', group_keys=False).apply(lambda x: x.sample(min(len(x), samples_per_bin)))[
-            'idx'].values
+        s_idx = df.groupby('bin', group_keys=False).apply(
+            lambda x: x.sample(min(len(x), samples_per_bin))
+        )['idx'].values
         s_idx = np.sort(s_idx)
         return p_values[s_idx], [genes[i] for i in s_idx], adj_matrix[np.ix_(s_idx, s_idx)]
 
     def run(self):
         results_log = []
+        all_histories = {}
+        all_tuning_results = {}
+
         for bname, dsets in self.data.items():
-            print(f"\nBenchmark: {bname}");
+            print(f"\nBenchmark: {bname}")
             d_count = 0
+
             for dname, content in dsets.items():
-                if d_count >= 10: break
-                print(f"  Dataset ({d_count + 1}/3): {dname}")
+                if d_count >= 10:
+                    break
+                print(f"  Dataset ({d_count + 1}/10): {dname}")
 
                 # 1. Align
                 ppi_raw, deg_df = content['ppi_network'], content['DEG']
                 ppi_mat, deg_aligned, genes = self.align_data(ppi_raw, deg_df)
-                if ppi_mat is None: continue
+                if ppi_mat is None:
+                    continue
 
                 try:
                     pvals = deg_aligned.rename(columns={"P.Value": 'pvals'})['pvals'].values
@@ -516,15 +439,23 @@ class BenchmarkRunner:
 
                 # 2a. Tuning Step (1000 genes)
                 print("    Step A: Tuning Lambda on 1000 genes...")
-                p_tune, genes_tune, ppi_tune = self.stratified_subsample(pvals, genes, ppi_mat, n_target=1000,
-                                                                         n_bins=50)
+                p_tune, genes_tune, ppi_tune = self.stratified_subsample(pvals, genes, ppi_mat, n_target=1000, n_bins=50)
                 f0_tune, f1_tune = FDRMethods.estimate_densities(p_tune)
-                best_lambda, best_beta = HyperparameterTuner.tune_lambda( p_tune,ppi_tune, f0_tune, f1_tune, dataset_name=dname)
+                best_lambda, best_beta, param_grid, tuning_scores = HyperparameterTuner.tune_lambda(
+                    p_tune, ppi_tune, f0_tune, f1_tune, dataset_name=dname
+                )
+
+                # Store tuning results
+                all_tuning_results[f"{bname}_{dname}"] = {
+                    'param_grid': param_grid,
+                    'scores_by_beta': tuning_scores,
+                    'best_lambda': best_lambda,
+                    'best_beta': best_beta
+                }
 
                 # 2b. Main Execution (5000 genes)
                 print(f"    Step B: Main Execution on 5000 genes (Lambda={best_lambda})...")
-                p_samp, genes_samp, ppi_samp = self.stratified_subsample(pvals, genes, ppi_mat, n_target=5000,
-                                                                         n_bins=100)
+                p_samp, genes_samp, ppi_samp = self.stratified_subsample(pvals, genes, ppi_mat, n_target=5000, n_bins=100)
 
                 # Run BH
                 rej_bh, _ = FDRMethods.standard_bh(p_samp)
@@ -536,27 +467,23 @@ class BenchmarkRunner:
                     p_samp, ppi_samp,
                     dataset_name=dname,
                     lambda_reg=best_lambda,
-                    beta = best_beta,
+                    beta=best_beta,
                     alpha=0.1
                 )
                 if rej_graph is None:
                     continue
                 genes_graph = [genes_samp[i] for i in range(len(genes_samp)) if rej_graph[i]]
 
-                # Plot History
-                plot_optimization_history(history, dname)
-
-
+                # Store history
+                all_histories[f"{bname}_{dname}"] = history
 
                 # Enrichment & AUC Calculation
                 eng = EnrichmentEngine(content['pathways'], genes_samp)
                 true_labels = set(content['positive_labels'])
 
-                # Get enrichment results
                 res_bh = eng.test_enrichment(genes_bh)
                 res_graph = eng.test_enrichment(genes_graph)
 
-                # Calculate AUCs
                 auc_bh = self._evaluate_auc(res_bh, true_labels)
                 auc_graph = self._evaluate_auc(res_graph, true_labels)
 
@@ -564,32 +491,28 @@ class BenchmarkRunner:
                     'benchmark': bname,
                     'dataset': dname,
                     'best_lambda': best_lambda,
+                    'best_beta': best_beta,
                     'auc_bh': auc_bh,
-                    'auc_graph': auc_graph
+                    'auc_graph': auc_graph,
+                    'n_rej_bh': int(rej_bh.sum()),
+                    'n_rej_graph': int(rej_graph.sum())
                 }
                 results_log.append(metrics)
                 print(f"    AUC: BH={metrics['auc_bh']:.3f}, Graph={metrics['auc_graph']:.3f}")
                 d_count += 1
 
-        return pd.DataFrame(results_log)
+        return pd.DataFrame(results_log), all_histories, all_tuning_results
 
     def _evaluate_auc(self, df_res, true_label_set):
-        """
-        Calculates AUC of the ROC curve.
-        Class 1: Pathways in true_label_set
-        Score: -log10(p_value) from hypergeometric test (EnrichmentEngine)
-        """
-        if df_res.empty: return 0.5
+        """Calculates AUC of the ROC curve."""
+        if df_res.empty:
+            return 0.5
 
-        # Binary labels
         y_true = df_res['pathway'].apply(lambda x: 1 if x in true_label_set else 0).values
 
-        # If no true labels found in result set or only true labels (degenerate cases)
         if len(np.unique(y_true)) < 2:
             return 0.5
 
-        # Scores: Higher score = more significant (lower p-val)
-        # Add epsilon to prevent log(0)
         y_score = -np.log10(df_res['pval'].values + 1e-100)
 
         try:
@@ -600,7 +523,21 @@ class BenchmarkRunner:
 
 if __name__ == "__main__":
     runner = BenchmarkRunner("/home/benny/Repos/SmoothieFDR/Data/benchmarks.pkl")
-    results = runner.run()
-    if not results.empty:
-        print("\nFinal Summary:");
-        print(results[['benchmark', 'dataset', 'best_lambda', 'auc_bh', 'auc_graph']])
+    results_df, histories, tuning_results = runner.run()
+
+    # Save results to cache
+    cache_data = {
+        'results_df': results_df,
+        'histories': histories,
+        'tuning_results': tuning_results
+    }
+    cache_path = os.path.join(CACHE_DIR, "gsea_bench_results.pkl")
+    with open(cache_path, "wb") as f:
+        pickle.dump(cache_data, f)
+
+    print(f"\nResults saved to: {cache_path}")
+    print(f"Run 'python plot_gsea_bench.py' to generate visualizations.")
+
+    if not results_df.empty:
+        print("\nFinal Summary:")
+        print(results_df[['benchmark', 'dataset', 'best_lambda', 'auc_bh', 'auc_graph']])

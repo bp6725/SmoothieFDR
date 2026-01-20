@@ -8,24 +8,27 @@ Methodology:
 3. Stage 1: Point-wise Estimation on Training Set.
 4. Stage 2: Global KLR on Training Set.
 5. Validation: Aggregated Histogram of Alpha on Test Set (All Datasets Combined).
+
+REFACTOR: Results saved to cache for separate visualization (use plot_allspace_cv.py).
 """
 
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 from scipy import stats
 from scipy.spatial.distance import cdist, squareform
 from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
 from scipy.cluster.hierarchy import linkage, fcluster
 from sklearn.model_selection import KFold, train_test_split
 from scipy.special import expit, logit
+import pickle as pkl
 import sys
 import os
-import pandas as pd
 
 # --- PATH SETUP ---
 sys.path.insert(0, os.path.abspath('.'))
+
+# --- CACHE CONFIGURATION ---
+CACHE_DIR = "/home/benny/Repos/SmoothieFDR/results/cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 # --- IMPORTS ---
 from spatial_fdr_evaluation.data.adbench_loader import load_from_ADbench
@@ -66,13 +69,6 @@ SIGMA_GRID = [0.1, 0.2, 0.3, 0.5, 0.8, 1.0, 1.5, 2.0]
 N_FOLDS = 5
 
 RANDOM_STATE = 42
-
-# Plot Styling
-plt.rcParams.update({
-    'font.size': 20, 'axes.labelsize': 22, 'axes.titlesize': 24,
-    'xtick.labelsize': 18, 'ytick.labelsize': 18, 'legend.fontsize': 18,
-    'figure.titlesize': 28, 'lines.linewidth': 3, 'grid.alpha': 0.4
-})
 
 # ============================================================================
 # 2. HIERARCHICAL CLUSTERING LOGIC (UNCHANGED)
@@ -139,7 +135,6 @@ def hierarchical_cluster_selection_smart(K, n_total, n_clusters_to_pick, min_clu
 # 3. DATA LOADING (UNCHANGED)
 # ============================================================================
 def compute_kernel_matrix(X, kernel_type='rbf', length_scale=1.0):
-    # USE CDIST to be safe with shapes (Stage 2 compatibility)
     dist_sq = cdist(X, X, 'sqeuclidean')
     if kernel_type == 'rbf':
         return np.exp(-dist_sq / (2 * length_scale**2))
@@ -256,7 +251,7 @@ class GlobalFDRRegressor:
         return expit(K_test @ self.c)
 
 # ============================================================================
-# 6. EXECUTION & VALIDATION PLOT
+# 6. EXECUTION (NO PLOTTING - RESULTS SAVED TO CACHE)
 # ============================================================================
 def process_dataset(dataset_name):
     print(f"\n[{dataset_name}] Processing...")
@@ -328,42 +323,16 @@ def process_dataset(dataset_name):
     K_te = np.exp(-dist_test / (2 * best_sigma**2))
     alpha_pred_te = klr.predict(K_te)
 
-    return {'y_true': y_te, 'alpha_pred': alpha_pred_te}
+    return {
+        'y_true': y_te,
+        'alpha_pred': alpha_pred_te,
+        'cv_scores': cv_scores,
+        'sigma_grid': SIGMA_GRID,
+        'best_sigma_factor': best_fac,
+        'p_values_test': p_te,
+        'X_test': X_te
+    }
 
-def plot_aggregated_histogram(results_dict):
-    """
-    Aggregates results from all datasets and plots a single Histogram.
-    Visualizes separation between Signal (H1, Blue) and Noise (H0, Red).
-    """
-    all_h1_alphas = []
-    all_h0_alphas = []
-
-    for ds_name, res in results_dict.items():
-        y_true = res['y_true']
-        alpha_pred = res['alpha_pred']
-
-        # Collect Signal (y=0) and Noise (y=1)
-        # Assuming 0 is Signal (H1) and 1 is Noise (H0) as per typical ADbench loading
-        all_h1_alphas.extend(alpha_pred[y_true == 0])
-        all_h0_alphas.extend(alpha_pred[y_true == 1])
-
-    plt.figure(figsize=(12, 8))
-
-    # Plot Histograms
-    if len(all_h0_alphas) > 0:
-        plt.hist(all_h0_alphas, bins=30, alpha=0.5, color='red', label='Noise (H0)', density=True, edgecolor='black')
-
-    if len(all_h1_alphas) > 0:
-        plt.hist(all_h1_alphas, bins=30, alpha=0.5, color='blue', label='Signal (H1)', density=True, edgecolor='black')
-
-    plt.title('Global Inference: Aggregated Alpha Distribution on Hidden Test Sets', fontweight='bold')
-    plt.xlabel('Predicted Alpha')
-    plt.ylabel('Density (Normalized Count)')
-    plt.xlim(0, 1)
-    plt.legend(loc='upper center', bbox_to_anchor=(0.5, 1.15), ncol=2)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
 
 if __name__ == "__main__":
     all_res = {}
@@ -374,5 +343,9 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[{ds}] Failed: {e}")
 
-    if all_res:
-        plot_aggregated_histogram(all_res)
+    # Save results to cache
+    cache_path = os.path.join(CACHE_DIR, "allspace_cv_results.pkl")
+    with open(cache_path, "wb") as f:
+        pkl.dump(all_res, f)
+    print(f"\nResults saved to: {cache_path}")
+    print(f"Run 'python plot_allspace_cv.py' to generate visualizations.")

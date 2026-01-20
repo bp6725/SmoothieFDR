@@ -1,21 +1,30 @@
+"""
+GSEA All-Space Benchmark: Global Inference on Gene Set Enrichment Analysis
+
+This script runs Stage 2 global inference on GSEA benchmarks using graph diffusion kernels.
+Results are saved to cache for separate visualization.
+
+REFACTOR: Results saved to cache for separate visualization (use plot_gsea_allspace_bench.py).
+"""
+
 import pickle
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 from scipy.stats import norm
 from scipy.special import expit, logit
-import matplotlib.pyplot as plt
 import networkx as nx
 import warnings
 import sys
+import os
 from sklearn.model_selection import KFold, train_test_split
 
-# --- CONFIGURATION ---
-plt.rcParams.update({
-    'font.size': 14, 'axes.labelsize': 16, 'axes.titlesize': 18,
-    'xtick.labelsize': 12, 'ytick.labelsize': 12, 'legend.fontsize': 12,
-    'figure.titlesize': 20, 'lines.linewidth': 2, 'grid.alpha': 0.4
-})
+# --- PATH SETUP ---
+sys.path.insert(0, os.path.abspath('.'))
+
+# --- CACHE CONFIGURATION ---
+CACHE_DIR = "/home/benny/Repos/SmoothieFDR/results/cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 # ============================================================================
@@ -48,11 +57,13 @@ class GlobalFDRRegressor:
             gnorm = np.linalg.norm(grad)
             self.c -= self.lr * grad
 
-            if gnorm < self.tol: break
+            if gnorm < self.tol:
+                break
         return self
 
     def predict(self, K_test_cross):
-        if self.c is None: raise ValueError("Model not fitted")
+        if self.c is None:
+            raise ValueError("Model not fitted")
         return expit(K_test_cross @ self.c)
 
 
@@ -63,7 +74,8 @@ class GlobalFDRRegressor:
 class KernelValidator:
     @staticmethod
     def validate_structure(K):
-        if np.isnan(K).any(): K = np.nan_to_num(K)
+        if np.isnan(K).any():
+            K = np.nan_to_num(K)
 
         all_vals = np.linalg.eigvalsh(K)
         vals = all_vals[-5:]
@@ -85,19 +97,14 @@ class KernelValidator:
 
     @staticmethod
     def validate_signal_alignment(adj_matrix, p_values, n_perms=100):
-        """
-        Checks if the P-values actually cluster on the graph (Moran's I / permutation).
-        """
-        # 1. Transform p-values to Z-scores
+        """Checks if the P-values actually cluster on the graph (Moran's I / permutation)."""
         p_clipped = np.clip(p_values, 1e-10, 1 - 1e-10)
         z_scores = norm.ppf(1 - p_clipped)
         z_scores = np.nan_to_num(z_scores)
 
-        # 2. Moran's I numerator: z.T * W * z
         z_centered = z_scores - np.mean(z_scores)
         obs_score = z_centered.T @ adj_matrix @ z_centered
 
-        # 3. Permutation Test
         perm_scores = []
         for _ in range(n_perms):
             z_perm = np.random.permutation(z_centered)
@@ -119,6 +126,7 @@ class KernelValidator:
             print("    -> WARNING: Signal looks random on this graph.")
             return False
 
+
 class SpatialFDRGraphKernel:
     def __init__(self, adjacency_matrix, kernel_type='diffusion', normalized=True, **kwargs):
         self.W = self._validate_adjacency(adjacency_matrix)
@@ -130,9 +138,12 @@ class SpatialFDRGraphKernel:
         self.K = self._compute_kernel()
 
     def _validate_adjacency(self, W):
-        if hasattr(W, 'nodes'): W = nx.to_numpy_array(W)
-        if sp.issparse(W): W = W.toarray()
-        if not np.allclose(W, W.T): W = (W + W.T) / 2
+        if hasattr(W, 'nodes'):
+            W = nx.to_numpy_array(W)
+        if sp.issparse(W):
+            W = W.toarray()
+        if not np.allclose(W, W.T):
+            W = (W + W.T) / 2
         np.fill_diagonal(W, 0)
         return W
 
@@ -176,10 +187,12 @@ def optimize_pointwise(K, p_values, f0, f1, lambda_reg=10.0, lambda_bound=500.0,
         grad_total = grad_nll + grad_bound + grad_reg
 
         gnorm = np.linalg.norm(grad_total)
-        if gnorm > 5.0: grad_total = grad_total * (5.0 / gnorm)
+        if gnorm > 5.0:
+            grad_total = grad_total * (5.0 / gnorm)
         c -= learning_rate * grad_total
 
-        if gnorm < tol and t > 100: break
+        if gnorm < tol and t > 100:
+            break
 
     return c, None
 
@@ -187,121 +200,52 @@ def optimize_pointwise(K, p_values, f0, f1, lambda_reg=10.0, lambda_bound=500.0,
 class HyperparameterTuner:
     @staticmethod
     def tune_lambda(p_values, ppi, f0, f1, param_grid=None, n_folds=3, dataset_name="Dataset"):
-        """
-        Performs K-Fold CV to find the best lambda_reg on the NLL.
-        """
+        """Performs K-Fold CV to find the best lambda_reg on the NLL."""
         if param_grid is None:
             param_grid = list(np.logspace(-15, 20, 15))
 
-        beta_grid = [2]  # Can extend to [1, 2, 3] if needed
+        beta_grid = [2]
 
         print(f"    Starting HP Tuning (Grid: {param_grid})...")
 
         kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
 
-        # Dictionary to store scores separated by beta for plotting
         results_by_beta = {b: [] for b in beta_grid}
-        flat_scores = []  # To keep track of the absolute best
-        flat_params = []  # To keep track of the absolute best
+        flat_scores = []
+        flat_params = []
 
-        # Loop structure
         for bam in beta_grid:
-            # Calculate Kernel once per beta
             K = SpatialFDRGraphKernel(ppi, kernel_type='diffusion', normalized=True, beta=bam).K
 
             for lam in param_grid:
                 fold_nlls = []
                 for train_idx, test_idx in kf.split(p_values):
-                    # Split
                     K_train = K[np.ix_(train_idx, train_idx)]
                     K_test_cross = K[np.ix_(test_idx, train_idx)]
 
                     p_train = p_values[train_idx]
                     f0_train, f1_train = f0[train_idx], f1[train_idx]
 
-                    # Train (Fast iter)
-                    c_train, _ = optimize_pointwise(K_train, p_train, f0_train, f1_train,
-                                                    lambda_reg=lam)
+                    c_train, _ = optimize_pointwise(K_train, p_train, f0_train, f1_train, lambda_reg=lam)
 
-                    # Predict
                     alpha_test = K_test_cross @ c_train
                     alpha_test = np.clip(alpha_test, 0.00001, 0.99999)
 
-                    # Evaluate NLL
                     mix_test = alpha_test * f0[test_idx] + (1 - alpha_test) * f1[test_idx]
                     mix_test = np.clip(mix_test, 1e-5, None)
                     nll = -np.sum(np.log(mix_test))
                     fold_nlls.append(nll)
 
                 mean_score = np.mean(fold_nlls)
-
-                # Store for plotting
                 results_by_beta[bam].append(mean_score)
-
-                # Store for finding best
                 flat_scores.append(mean_score)
                 flat_params.append((lam, bam))
 
-        # Find global best
         best_idx = np.argmin(flat_scores)
         best_lambda, best_beta = flat_params[best_idx]
         print(f"    [Tuning] Best Lambda: {best_lambda} (with Beta: {best_beta})")
 
-        # 2D PLOT
-        plt.figure(figsize=(10, 6))
-
-        # Plot a separate line for each beta
-        for bam in beta_grid:
-            plt.plot(param_grid, results_by_beta[bam], 'o-', linewidth=2, label=f'Beta={bam}')
-
-        plt.axvline(best_lambda, color='red', linestyle='--', label=f'Best $\lambda$: {best_lambda:.2e}')
-        plt.xscale('log')
-        plt.xlabel('Lambda')
-        plt.ylabel('CV NLL')
-        plt.title(f'HP Tuning: {dataset_name}')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.show()
-
-        return best_lambda, best_beta
-
-    @staticmethod
-    def tune_lambda_subset(p_values, adj_matrix, f0, f1, param_grid=None, n_folds=3):
-        if param_grid is None: param_grid = list(np.logspace(-5, 5, 10))
-        beta_grid = [1, 2, 3]
-
-        kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
-        best_score = np.inf
-        best_params = (10.0, 2.0)
-
-        for bam in beta_grid:
-            try:
-                gk = SpatialFDRGraphKernel(adj_matrix, kernel_type='diffusion', normalized=True, beta=bam)
-            except:
-                continue
-            K = gk.K
-
-            for lam in param_grid:
-                fold_nlls = []
-                for train_idx, val_idx in kf.split(p_values):
-                    K_tr = K[np.ix_(train_idx, train_idx)]
-                    K_val = K[np.ix_(val_idx, train_idx)]
-
-                    c_tr, _ = optimize_pointwise(K_tr, p_values[train_idx], f0[train_idx], f1[train_idx],
-                                                 lambda_reg=lam)
-
-                    alpha_val = K_val @ c_tr
-                    alpha_val = np.clip(alpha_val, 0.001, 0.999)
-                    mix = alpha_val * f0[val_idx] + (1 - alpha_val) * f1[val_idx]
-                    fold_nlls.append(-np.sum(np.log(mix + 1e-12)))
-
-                avg_nll = np.mean(fold_nlls)
-                if avg_nll < best_score:
-                    best_score = avg_nll
-                    best_params = (lam, bam)
-
-        print(f"    [Tuning] Best Lambda: {best_params[0]}, Beta: {best_params[1]}")
-        return best_params
+        return best_lambda, best_beta, param_grid, results_by_beta
 
 
 # ============================================================================
@@ -323,20 +267,26 @@ class FDRMethods:
 class BenchmarkRunner:
     def __init__(self, pickle_path):
         print(f"Loading data from {pickle_path}...")
-        with open(pickle_path, 'rb') as f: self.data = pickle.load(f)
+        with open(pickle_path, 'rb') as f:
+            self.data = pickle.load(f)
 
     def align_data(self, ppi, deg_df):
-        if 'ensmb' in deg_df.columns: deg_df = deg_df.set_index('ensmb')
-        if deg_df.index.duplicated().any(): deg_df = deg_df[~deg_df.index.duplicated(keep='first')]
+        if 'ensmb' in deg_df.columns:
+            deg_df = deg_df.set_index('ensmb')
+        if deg_df.index.duplicated().any():
+            deg_df = deg_df[~deg_df.index.duplicated(keep='first')]
 
         if hasattr(ppi, 'nodes'):
-            graph_nodes = list(ppi.nodes()); is_nx = True
+            graph_nodes = list(ppi.nodes())
+            is_nx = True
         else:
-            graph_nodes = ppi.index.tolist(); is_nx = False
+            graph_nodes = ppi.index.tolist()
+            is_nx = False
 
         data_genes = deg_df.index.tolist()
         common = sorted(list(set(graph_nodes).intersection(set(data_genes))))
-        if len(common) < 100: return None, None, None
+        if len(common) < 100:
+            return None, None, None
 
         if is_nx:
             adj = nx.to_numpy_array(ppi.subgraph(common), nodelist=common)
@@ -345,10 +295,10 @@ class BenchmarkRunner:
 
         return adj, deg_df.loc[common], common
 
-    # Add the stratified_subsample method from first script
     def stratified_subsample(self, p_values, genes, adj_matrix, n_target=5000, n_bins=100):
         N = len(p_values)
-        if N <= n_target: return p_values, genes, adj_matrix
+        if N <= n_target:
+            return p_values, genes, adj_matrix
 
         print(f"    Subsampling {N} -> {n_target} genes...")
         df = pd.DataFrame({'p': p_values, 'idx': range(N)})
@@ -366,6 +316,7 @@ class BenchmarkRunner:
 
     def run_inference_split(self):
         results_log = {}
+        tuning_results = {}
 
         for bname, dsets in self.data.items():
             print(f"\nBenchmark: {bname}")
@@ -380,14 +331,13 @@ class BenchmarkRunner:
                 # 1. Align
                 ppi_raw, deg_df = content['ppi_network'], content['DEG']
                 ppi_mat, deg_aligned, genes = self.align_data(ppi_raw, deg_df)
-                if ppi_mat is None: continue
+                if ppi_mat is None:
+                    continue
 
                 try:
                     pvals = deg_aligned.rename(columns={"P.Value": 'pvals'})['pvals'].values
                 except:
                     continue
-
-                # ===== IDENTICAL TO FIRST SCRIPT UP TO HERE =====
 
                 # 2a. Tuning Step (1000 genes) - STRATIFIED
                 print("    Step A: Tuning Lambda on 1000 genes...")
@@ -395,9 +345,17 @@ class BenchmarkRunner:
                     pvals, genes, ppi_mat, n_target=1000, n_bins=50
                 )
                 f0_tune, f1_tune = FDRMethods.estimate_densities(p_tune)
-                best_lambda, best_beta = HyperparameterTuner.tune_lambda(
+                best_lambda, best_beta, param_grid, tuning_scores = HyperparameterTuner.tune_lambda(
                     p_tune, ppi_tune, f0_tune, f1_tune, dataset_name=dname
                 )
+
+                # Store tuning results
+                tuning_results[dname] = {
+                    'param_grid': param_grid,
+                    'scores_by_beta': tuning_scores,
+                    'best_lambda': best_lambda,
+                    'best_beta': best_beta
+                }
 
                 # 2b. Main Execution (5000 genes) - STRATIFIED
                 print(f"    Step B: Main Execution on 5000 genes (Lambda={best_lambda})...")
@@ -420,14 +378,10 @@ class BenchmarkRunner:
                     print("    Skipping (Validation failed)")
                     continue
 
-                # ===== DIVERGENCE POINT: Split for Inference =====
-
                 # 5. Split into Train/Test (80/20)
                 print("    Splitting into train/test for inference evaluation...")
                 indices = np.arange(len(p_samp))
-                idx_train, idx_test = train_test_split(
-                    indices, test_size=0.2, random_state=42
-                )
+                idx_train, idx_test = train_test_split(indices, test_size=0.2, random_state=42)
 
                 # Slice data and kernel
                 p_train = p_samp[idx_train]
@@ -444,7 +398,7 @@ class BenchmarkRunner:
                 )
                 alpha_train = np.clip(K_train @ c_opt, 0.001, 0.999)
 
-                # 7. Stage 2: Global KLR (Your Novel Contribution)
+                # 7. Stage 2: Global KLR
                 print("    Stage 2: Fitting Global KLR...")
                 klr = GlobalFDRRegressor(lambda_global=0.5)
                 klr.fit(K_train, alpha_train)
@@ -455,52 +409,28 @@ class BenchmarkRunner:
 
                 results_log[dname] = {
                     'y_hidden_pvals': p_samp[idx_test],
-                    'alpha_pred': alpha_pred
+                    'alpha_pred': alpha_pred,
+                    'best_lambda': best_lambda,
+                    'best_beta': best_beta
                 }
 
                 d_count += 1
 
-        return results_log
-
-
-def plot_aggregated_results(results_dict):
-    all_signal = []
-    all_noise = []
-
-    for dname, res in results_dict.items():
-        p_hidden = res['y_hidden_pvals']
-        pred = res['alpha_pred']
-
-        # Proxy: p < 0.05 is "Signal"
-        mask_sig = p_hidden < 0.05
-        all_signal.extend(pred[mask_sig])
-        all_noise.extend(pred[~mask_sig])
-
-    plt.figure(figsize=(10, 6))
-    if len(all_noise) > 0:
-        plt.hist(all_noise, bins=40, alpha=0.5, color='red', density=True, label='Hidden Noise (p>0.05)',
-                 edgecolor='black')
-    if len(all_signal) > 0:
-        plt.hist(all_signal, bins=40, alpha=0.5, color='blue', density=True, label='Hidden Signal (p<0.05)',
-                 edgecolor='black')
-
-    plt.title("Aggregated Inference on Unseen Nodes (TGCA Benchmarks)")
-    plt.xlabel("Predicted Alpha (Probability of Signal)")
-    plt.ylabel("Density")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.xlim(0, 1)
-    plt.show()
+        return results_log, tuning_results
 
 
 if __name__ == "__main__":
     runner = BenchmarkRunner("/home/benny/Repos/SmoothieFDR/Data/benchmarks.pkl")
-    results = runner.run_inference_split()
+    results, tuning_results = runner.run_inference_split()
 
+    # Save results to cache
+    cache_data = {
+        'results': results,
+        'tuning_results': tuning_results
+    }
+    cache_path = os.path.join(CACHE_DIR, "gsea_allspace_results.pkl")
+    with open(cache_path, "wb") as f:
+        pickle.dump(cache_data, f)
 
-
-    if results:
-        plot_aggregated_results(results)
-
-        with open("/home/benny/Repos/SmoothieFDR/cache/results.pkl", "wb") as f:
-            pickle.dump(results, f)
+    print(f"\nResults saved to: {cache_path}")
+    print(f"Run 'python plot_gsea_allspace_bench.py' to generate visualizations.")
