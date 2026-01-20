@@ -66,7 +66,8 @@ DATASET_CONFIG = {
 OPT_PARAMS = {'lr': 0.0005, 'lambda_reg': 10.0, 'lambda_bound': 500.0, 'max_iter': 5000}
 
 # Experiment Parameters
-TRAIN_FRACTION = 0.7  # 70% for training, 30% for testing
+HOLDOUT_FRACTION = 0.2  # 20% fixed held-out test set (same for both methods)
+TRAIN_FRACTION_OF_POOL = 0.7  # 70% of candidate pool for training
 RANDOM_STATE = 42
 REGULARIZATION_LAMBDA = 10.0  # For A-optimal design
 
@@ -618,12 +619,21 @@ def run_experiment(X, p_values, true_labels, sigma, train_indices, test_indices,
 
 
 def process_dataset(dataset_name):
-    """Process a single dataset with all three methods."""
+    """
+    Process a single dataset with 3-set split for fair comparison.
+
+    Split structure:
+    - Fixed held-out test set (20%) - SAME for both methods (fair comparison)
+    - Candidate pool (80%):
+        - Training set (70% of pool) - selected by random OR A-optimal
+        - Inference set (30% of pool) - predict on these (no p-values observed)
+    """
     print(f"\n{'='*60}")
     print(f"[{dataset_name}] Processing...")
     print(f"{'='*60}")
 
     np.random.seed(RANDOM_STATE)
+    rng = np.random.RandomState(RANDOM_STATE)
 
     # Load data
     data = load_and_sample_hierarchical(dataset_name)
@@ -639,56 +649,86 @@ def process_dataset(dataset_name):
         X = np.nan_to_num(X)
 
     M = len(X)
-    n_train = int(M * TRAIN_FRACTION)
-    n_test = M - n_train
 
-    print(f"  Total points: {M}, Train: {n_train} (70%), Test: {n_test} (30%)")
+    # ========================================================================
+    # SPLIT 1: Fixed held-out test set (same for both methods)
+    # ========================================================================
+    n_holdout = int(M * HOLDOUT_FRACTION)
+    all_indices = np.arange(M)
+    rng.shuffle(all_indices)
+
+    holdout_indices = sorted(all_indices[:n_holdout].tolist())
+    candidate_pool_indices = sorted(all_indices[n_holdout:].tolist())
+
+    n_pool = len(candidate_pool_indices)
+    n_train = int(n_pool * TRAIN_FRACTION_OF_POOL)
+    n_inference = n_pool - n_train
+
+    print(f"  Total points: {M}")
+    print(f"  Fixed held-out test: {n_holdout} ({HOLDOUT_FRACTION*100:.0f}%)")
+    print(f"  Candidate pool: {n_pool} ({(1-HOLDOUT_FRACTION)*100:.0f}%)")
+    print(f"    - Training: {n_train} ({TRAIN_FRACTION_OF_POOL*100:.0f}% of pool)")
+    print(f"    - Inference: {n_inference} ({(1-TRAIN_FRACTION_OF_POOL)*100:.0f}% of pool)")
 
     # Compute full kernel matrix (needed for A-optimal)
     K_full = compute_kernel_matrix(X, length_scale=sigma)
 
-    # ========================================================================
-    # Method 1: Full data (benchmark) - use all points for training
-    # ========================================================================
-    print(f"\n  [1/3] Full data benchmark...")
-    all_indices = list(range(M))
+    # Compute kernel matrix for candidate pool only (for A-optimal selection)
+    K_pool = K_full[np.ix_(candidate_pool_indices, candidate_pool_indices)]
 
-    # For full data, we still need to evaluate on "test" points
-    # Use same test indices as subsampled methods for fair comparison
-    # First, get random test indices
-    rng = np.random.RandomState(RANDOM_STATE)
-    test_indices_random = sorted(rng.choice(M, n_test, replace=False))
-    train_indices_full = [i for i in range(M) if i not in test_indices_random]
+    # ========================================================================
+    # Method 1: Full data (benchmark) - use ALL points for training
+    # ========================================================================
+    print(f"\n  [1/3] Full data benchmark (train on all {M} points)...")
+    all_train_indices = list(range(M))
 
-    # Run with ALL data as training (benchmark)
+    # Evaluate on held-out test set
     result_full = run_experiment(X, p_values, true_labels, sigma,
-                                  all_indices, test_indices_random, 'full')
+                                  all_train_indices, holdout_indices, 'full')
 
     # ========================================================================
-    # Method 2: Random 70% subsampling
+    # Method 2: Random selection from candidate pool
     # ========================================================================
-    print(f"\n  [2/3] Random subsampling ({TRAIN_FRACTION*100:.0f}%)...")
-    train_indices_random = [i for i in range(M) if i not in test_indices_random]
+    print(f"\n  [2/3] Random subsampling ({n_train} from pool)...")
 
+    # Randomly select training indices from candidate pool
+    pool_shuffled = rng.permutation(candidate_pool_indices)
+    train_indices_random = sorted(pool_shuffled[:n_train].tolist())
+    inference_indices_random = sorted(pool_shuffled[n_train:].tolist())
+
+    # Train on selected, predict on inference set
     result_random = run_experiment(X, p_values, true_labels, sigma,
-                                    train_indices_random, test_indices_random, 'random')
+                                    train_indices_random, inference_indices_random, 'random')
+
+    # Also evaluate on held-out for fair comparison
+    result_random_holdout = run_experiment(X, p_values, true_labels, sigma,
+                                            train_indices_random, holdout_indices, 'random_holdout')
 
     # ========================================================================
-    # Method 3: A-optimal 70% subsampling
+    # Method 3: A-optimal selection from candidate pool
     # ========================================================================
-    print(f"\n  [3/3] A-optimal subsampling ({TRAIN_FRACTION*100:.0f}%)...")
-    train_indices_aopt = greedy_a_optimal_selection(
-        K_full, n_train, REGULARIZATION_LAMBDA, verbose=True
+    print(f"\n  [3/3] A-optimal subsampling ({n_train} from pool)...")
+
+    # A-optimal selection on the POOL kernel matrix
+    selected_pool_indices = greedy_a_optimal_selection(
+        K_pool, n_train, REGULARIZATION_LAMBDA, verbose=True
     )
-    test_indices_aopt = [i for i in range(M) if i not in train_indices_aopt]
 
+    # Map back to original indices
+    train_indices_aopt = sorted([candidate_pool_indices[i] for i in selected_pool_indices])
+    inference_indices_aopt = sorted([i for i in candidate_pool_indices if i not in train_indices_aopt])
+
+    # Train on selected, predict on inference set
     result_aopt = run_experiment(X, p_values, true_labels, sigma,
-                                  train_indices_aopt, test_indices_aopt, 'a_optimal')
+                                  train_indices_aopt, inference_indices_aopt, 'a_optimal')
+
+    # Also evaluate on held-out for fair comparison
+    result_aopt_holdout = run_experiment(X, p_values, true_labels, sigma,
+                                          train_indices_aopt, holdout_indices, 'a_optimal_holdout')
 
     # ========================================================================
     # Compute ground truth lfdr using full data for reference
     # ========================================================================
-    # Density estimation on all data
     def f0_func(p):
         return np.ones_like(p)
 
@@ -718,15 +758,24 @@ def process_dataset(dataset_name):
         'true_labels': true_labels,
         'sigma': sigma,
         'n_total': M,
+        'n_holdout': n_holdout,
+        'n_pool': n_pool,
         'n_train': n_train,
-        'n_test': n_test,
+        'n_inference': n_inference,
+        # Index sets
+        'holdout_indices': holdout_indices,
+        'candidate_pool_indices': candidate_pool_indices,
         # Oracle (full data)
         'alpha_oracle': alpha_oracle,
         'lfdr_oracle': lfdr_oracle,
-        # Results
-        'result_full': result_full,
+        # Results on INFERENCE set (where A-optimal should shine)
         'result_random': result_random,
         'result_aopt': result_aopt,
+        # Results on HOLDOUT set (fair comparison - same test set)
+        'result_random_holdout': result_random_holdout,
+        'result_aopt_holdout': result_aopt_holdout,
+        # Full data benchmark
+        'result_full': result_full,
     }
 
 

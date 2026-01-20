@@ -698,7 +698,270 @@ def plot_summary_stats(results_dict, save_path=None):
         elif improvement_val < 0:
             table[(i+1, 6)].set_facecolor('#FFB6C1')
 
-    plt.title('Data-Efficient Testing: Summary Statistics\n(R=Random, A=A-Optimal)',
+    plt.title('Data-Efficient Testing: Summary Statistics (Inference Set)\n(R=Random, A=A-Optimal)',
+              fontweight='bold', fontsize=14, pad=20)
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
+
+# ============================================================================
+# HOLDOUT COMPARISON PLOTS (Fair Comparison on Same Test Set)
+# ============================================================================
+
+def plot_holdout_comparison(results_dict, save_path=None):
+    """
+    Fair comparison: Both methods evaluated on the SAME held-out test set.
+
+    This is the key comparison showing A-optimal advantage when test set is fixed.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+
+    for idx, (method_key, method_name, color) in enumerate([
+        ('result_random_holdout', 'Random Sampling (70%)', 'red'),
+        ('result_aopt_holdout', 'A-Optimal Sampling (70%)', 'blue')
+    ]):
+        ax = axes[idx]
+
+        all_alpha_oracle = []
+        all_alpha_pred = []
+        all_alpha_std = []
+
+        for ds_name, res in results_dict.items():
+            # Skip if holdout results not available (old cache)
+            if method_key not in res:
+                continue
+
+            result = res[method_key]
+            test_idx = result['test_indices']  # Same holdout indices for both
+            alpha_pred = result['alpha_pred']
+            alpha_oracle = res['alpha_oracle'][test_idx]
+
+            if 'alpha_std' in result:
+                alpha_std = result['alpha_std']
+            else:
+                alpha_std = np.zeros_like(alpha_pred)
+
+            all_alpha_oracle.extend(alpha_oracle)
+            all_alpha_pred.extend(alpha_pred)
+            all_alpha_std.extend(alpha_std)
+
+        if len(all_alpha_oracle) == 0:
+            ax.text(0.5, 0.5, 'No holdout data\n(re-run main_data_efficient.py)',
+                    ha='center', va='center', transform=ax.transAxes, fontsize=14)
+            ax.set_title(method_name, fontweight='bold')
+            continue
+
+        all_alpha_oracle = np.array(all_alpha_oracle)
+        all_alpha_pred = np.array(all_alpha_pred)
+        all_alpha_std = np.array(all_alpha_std)
+
+        # Subsample for clearer visualization
+        if len(all_alpha_oracle) > 200:
+            idx_sample = np.random.choice(len(all_alpha_oracle), 200, replace=False)
+        else:
+            idx_sample = np.arange(len(all_alpha_oracle))
+
+        # Plot with error bars
+        ax.errorbar(all_alpha_oracle[idx_sample], all_alpha_pred[idx_sample],
+                    yerr=2*all_alpha_std[idx_sample],
+                    fmt='o', color=color, alpha=0.5, markersize=5,
+                    ecolor=color, elinewidth=1, capsize=2)
+
+        ax.plot([0, 1], [0, 1], 'k--', linewidth=2, label='Perfect prediction')
+        ax.axhline(0.5, color='black', linewidth=3, linestyle='-', label='Decision threshold')
+
+        # Compute MSE for annotation
+        mse = np.mean((all_alpha_pred - all_alpha_oracle)**2)
+        ax.annotate(f'MSE: {mse:.4f}', xy=(0.05, 0.95), xycoords='axes fraction',
+                    fontsize=12, fontweight='bold', color=color)
+
+        ax.set_xlabel('Oracle alpha')
+        ax.set_ylabel('Predicted alpha')
+        ax.set_title(method_name, fontweight='bold')
+        ax.legend(loc='lower right')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+    fig.suptitle('Fair Comparison: Same Held-Out Test Set (20%)',
+                 fontsize=18, fontweight='bold', y=1.02)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
+
+def plot_holdout_mse_comparison(results_dict, save_path=None):
+    """
+    Bar chart comparing MSE on held-out test set (fair comparison).
+    """
+    datasets = []
+    mse_random = []
+    mse_aopt = []
+
+    for ds_name, res in results_dict.items():
+        # Skip if holdout results not available
+        if 'result_random_holdout' not in res or 'result_aopt_holdout' not in res:
+            continue
+
+        # Random on holdout
+        result_random = res['result_random_holdout']
+        test_idx = result_random['test_indices']
+        alpha_pred_random = result_random['alpha_pred']
+        alpha_oracle = res['alpha_oracle'][test_idx]
+        mse_r = np.mean((alpha_pred_random - alpha_oracle)**2)
+
+        # A-optimal on holdout (same test set!)
+        result_aopt = res['result_aopt_holdout']
+        alpha_pred_aopt = result_aopt['alpha_pred']
+        mse_a = np.mean((alpha_pred_aopt - alpha_oracle)**2)
+
+        datasets.append(ds_name[:12])
+        mse_random.append(mse_r)
+        mse_aopt.append(mse_a)
+
+    if not datasets:
+        print("No holdout data available. Re-run main_data_efficient.py")
+        return
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+
+    x = np.arange(len(datasets))
+    width = 0.35
+
+    bars1 = ax.bar(x - width/2, mse_random, width, label='Random', color='red', alpha=0.7)
+    bars2 = ax.bar(x + width/2, mse_aopt, width, label='A-Optimal', color='blue', alpha=0.7)
+
+    ax.set_xlabel('Dataset')
+    ax.set_ylabel('MSE (alpha predicted vs oracle)')
+    ax.set_title('Fair Comparison: MSE on Same Held-Out Test Set (20%)',
+                 fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(datasets, rotation=45, ha='right')
+    ax.legend()
+    ax.grid(True, alpha=0.3, axis='y')
+
+    # Add improvement percentage
+    for i, (r, a) in enumerate(zip(mse_random, mse_aopt)):
+        if r > 0:
+            improvement = (r - a) / r * 100
+            color = 'green' if improvement > 0 else 'red'
+            ax.annotate(f'{improvement:+.0f}%',
+                       xy=(x[i], max(r, a) + 0.001),
+                       ha='center', fontsize=9, color=color)
+
+    # Add summary annotation
+    avg_improvement = np.mean([(r - a) / r * 100 for r, a in zip(mse_random, mse_aopt) if r > 0])
+    ax.annotate(f'Avg improvement: {avg_improvement:+.1f}%',
+               xy=(0.98, 0.95), xycoords='axes fraction',
+               ha='right', fontsize=12, fontweight='bold',
+               color='green' if avg_improvement > 0 else 'red')
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
+
+def plot_holdout_summary_stats(results_dict, save_path=None):
+    """
+    Summary statistics table for holdout (fair comparison).
+    """
+    datasets = []
+    n_holdout = []
+    mse_random = []
+    mse_aopt = []
+    corr_random = []
+    corr_aopt = []
+
+    for ds_name, res in results_dict.items():
+        if 'result_random_holdout' not in res or 'result_aopt_holdout' not in res:
+            continue
+
+        # Both methods evaluated on SAME holdout set
+        result_random = res['result_random_holdout']
+        result_aopt = res['result_aopt_holdout']
+        test_idx = result_random['test_indices']  # Same for both
+
+        alpha_oracle = res['alpha_oracle'][test_idx]
+        alpha_pred_r = result_random['alpha_pred']
+        alpha_pred_a = result_aopt['alpha_pred']
+
+        datasets.append(ds_name[:15])
+        n_holdout.append(len(test_idx))
+
+        # MSE
+        mse_random.append(np.mean((alpha_pred_r - alpha_oracle)**2))
+        mse_aopt.append(np.mean((alpha_pred_a - alpha_oracle)**2))
+
+        # Correlation
+        corr_random.append(np.corrcoef(alpha_pred_r, alpha_oracle)[0, 1])
+        corr_aopt.append(np.corrcoef(alpha_pred_a, alpha_oracle)[0, 1])
+
+    if not datasets:
+        print("No holdout data available. Re-run main_data_efficient.py")
+        return
+
+    fig, ax = plt.subplots(figsize=(14, len(datasets) * 0.5 + 2))
+    ax.axis('tight')
+    ax.axis('off')
+
+    table_data = []
+    for i in range(len(datasets)):
+        improvement = (mse_random[i] - mse_aopt[i]) / mse_random[i] * 100 if mse_random[i] > 0 else 0
+        table_data.append([
+            datasets[i],
+            n_holdout[i],
+            f'{corr_random[i]:.3f}',
+            f'{corr_aopt[i]:.3f}',
+            f'{mse_random[i]:.4f}',
+            f'{mse_aopt[i]:.4f}',
+            f'{improvement:+.1f}%'
+        ])
+
+    # Add mean row
+    avg_improvement = np.mean([(mse_random[i] - mse_aopt[i]) / mse_random[i] * 100
+                               for i in range(len(datasets)) if mse_random[i] > 0])
+    table_data.append([
+        'MEAN',
+        int(np.mean(n_holdout)),
+        f'{np.mean(corr_random):.3f}',
+        f'{np.mean(corr_aopt):.3f}',
+        f'{np.mean(mse_random):.4f}',
+        f'{np.mean(mse_aopt):.4f}',
+        f'{avg_improvement:+.1f}%'
+    ])
+
+    table = ax.table(
+        cellText=table_data,
+        colLabels=['Dataset', 'N holdout', 'Corr (R)', 'Corr (A)', 'MSE (R)', 'MSE (A)', 'Improvement'],
+        cellLoc='center',
+        loc='center'
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.2, 1.5)
+
+    # Color the improvement column
+    for i in range(len(table_data)):
+        improvement_str = table_data[i][-1]
+        improvement_val = float(improvement_str.replace('%', '').replace('+', ''))
+        if improvement_val > 0:
+            table[(i+1, 6)].set_facecolor('#90EE90')
+        elif improvement_val < 0:
+            table[(i+1, 6)].set_facecolor('#FFB6C1')
+
+    plt.title('Fair Comparison: Summary Statistics on Same Held-Out Set\n(R=Random, A=A-Optimal)',
               fontweight='bold', fontsize=14, pad=20)
 
     if save_path:
@@ -720,6 +983,43 @@ def generate_all_plots(results_dict, output_dir, show=False):
 
     print("Generating plots...")
 
+    # ========================================================================
+    # FAIR COMPARISON PLOTS (SAME HELD-OUT TEST SET)
+    # ========================================================================
+    print("\n=== Fair Comparison Plots (Same Held-Out Test Set) ===")
+
+    # Check if holdout results are available
+    has_holdout = any('result_random_holdout' in res for res in results_dict.values())
+
+    if has_holdout:
+        # Holdout scatter comparison
+        plot_holdout_comparison(
+            results_dict,
+            save_path=os.path.join(output_dir, 'holdout_comparison.png') if not show else None
+        )
+        print("  - Holdout comparison (scatter): done")
+
+        # Holdout MSE comparison
+        plot_holdout_mse_comparison(
+            results_dict,
+            save_path=os.path.join(output_dir, 'holdout_mse_comparison.png') if not show else None
+        )
+        print("  - Holdout MSE comparison: done")
+
+        # Holdout summary stats
+        plot_holdout_summary_stats(
+            results_dict,
+            save_path=os.path.join(output_dir, 'holdout_summary_stats.png') if not show else None
+        )
+        print("  - Holdout summary statistics: done")
+    else:
+        print("  ! No holdout data available. Re-run main_data_efficient.py for fair comparison.")
+
+    # ========================================================================
+    # INFERENCE SET PLOTS (Different test sets - shows A-optimal advantage)
+    # ========================================================================
+    print("\n=== Inference Set Plots ===")
+
     # Main scatter plot (side by side)
     plot_logit_alpha_vs_lfdr_scatter(
         results_dict,
@@ -734,24 +1034,24 @@ def generate_all_plots(results_dict, output_dir, show=False):
     )
     print("  - Logit alpha vs lfdr (combined): done")
 
-    # MSE comparison
+    # MSE comparison (inference sets - different for each method)
     plot_prediction_error_comparison(
         results_dict,
-        save_path=os.path.join(output_dir, 'mse_comparison.png') if not show else None
+        save_path=os.path.join(output_dir, 'mse_comparison_inference.png') if not show else None
     )
-    print("  - MSE comparison: done")
+    print("  - MSE comparison (inference set): done")
 
-    # Summary table
+    # Summary table (inference sets)
     plot_summary_stats(
         results_dict,
-        save_path=os.path.join(output_dir, 'summary_stats.png') if not show else None
+        save_path=os.path.join(output_dir, 'summary_stats_inference.png') if not show else None
     )
-    print("  - Summary statistics: done")
+    print("  - Summary statistics (inference set): done")
 
     # ========================================================================
     # CONFIDENCE INTERVAL PLOTS
     # ========================================================================
-    print("\nGenerating confidence interval plots...")
+    print("\n=== Confidence Interval Plots ===")
 
     # Scatter with error bars (95% CI)
     plot_scatter_with_ci(
@@ -782,7 +1082,7 @@ def generate_all_plots(results_dict, output_dir, show=False):
     print("  - Scatter colored by uncertainty: done")
 
     # Per-dataset plots
-    print("\nGenerating per-dataset plots...")
+    print("\n=== Per-Dataset Plots ===")
     plot_per_dataset_scatter(results_dict, output_dir, show=show)
     print("  - Per-dataset plots: done")
 
