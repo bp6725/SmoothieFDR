@@ -49,16 +49,16 @@ def plot_scatter_with_ci(results_dict, save_path=None):
     """
     Scatter plot of predicted alpha vs oracle alpha with confidence intervals.
 
-    Shows error bars representing 95% credible intervals.
+    Shows both random and A-optimal sampling on the same plot with different colors.
     """
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+    fig, ax = plt.subplots(1, 1, figsize=(12, 10))
 
-    for idx, (method_key, method_name, color) in enumerate([
+    # Collect data for both methods
+    data_by_method = {}
+    for method_key, method_name, color in [
         ('result_random', 'Random Sampling (70%)', 'red'),
         ('result_aopt', 'A-Optimal Sampling (70%)', 'blue')
-    ]):
-        ax = axes[idx]
-
+    ]:
         all_alpha_oracle = []
         all_alpha_pred = []
         all_alpha_std = []
@@ -79,35 +79,45 @@ def plot_scatter_with_ci(results_dict, save_path=None):
             all_alpha_pred.extend(alpha_pred)
             all_alpha_std.extend(alpha_std)
 
-        all_alpha_oracle = np.array(all_alpha_oracle)
-        all_alpha_pred = np.array(all_alpha_pred)
-        all_alpha_std = np.array(all_alpha_std)
+        data_by_method[method_key] = {
+            'oracle': np.array(all_alpha_oracle),
+            'pred': np.array(all_alpha_pred),
+            'std': np.array(all_alpha_std),
+            'name': method_name,
+            'color': color
+        }
 
+    # Plot both methods
+    for method_key, data in data_by_method.items():
         # Subsample for clearer visualization (if too many points)
-        if len(all_alpha_oracle) > 200:
-            idx_sample = np.random.choice(len(all_alpha_oracle), 200, replace=False)
+        n_points = len(data['oracle'])
+        if n_points > 150:
+            idx_sample = np.random.choice(n_points, 150, replace=False)
         else:
-            idx_sample = np.arange(len(all_alpha_oracle))
+            idx_sample = np.arange(n_points)
 
         # Plot with error bars
-        ax.errorbar(all_alpha_oracle[idx_sample], all_alpha_pred[idx_sample],
-                    yerr=2*all_alpha_std[idx_sample],  # 95% CI
-                    fmt='o', color=color, alpha=0.5, markersize=5,
-                    ecolor=color, elinewidth=1, capsize=2)
+        ax.errorbar(data['oracle'][idx_sample], data['pred'][idx_sample],
+                    yerr=2*data['std'][idx_sample],  # 95% CI
+                    fmt='o', color=data['color'], alpha=0.5, markersize=5,
+                    ecolor=data['color'], elinewidth=1, capsize=2,
+                    label=data['name'])
 
-        # Perfect prediction line
-        ax.plot([0, 1], [0, 1], 'k--', linewidth=2, label='Perfect prediction')
+    # Perfect prediction line
+    ax.plot([0, 1], [0, 1], 'k--', linewidth=2, label='Perfect prediction')
 
-        ax.set_xlabel('Oracle alpha')
-        ax.set_ylabel('Predicted alpha')
-        ax.set_title(method_name, fontweight='bold')
-        ax.legend(loc='upper left')
-        ax.grid(True, alpha=0.3)
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
+    # Decision line at alpha = 0.5
+    ax.axhline(0.5, color='black', linewidth=3, linestyle='-', label='Decision threshold')
 
-    fig.suptitle('Prediction with 95% Credible Intervals',
-                 fontsize=18, fontweight='bold', y=1.02)
+    ax.set_xlabel('Oracle alpha')
+    ax.set_ylabel('Predicted alpha')
+    ax.set_title('Prediction with 95% Credible Intervals\nRandom vs A-Optimal Sampling',
+                 fontsize=16, fontweight='bold')
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+
     plt.tight_layout()
 
     if save_path:
