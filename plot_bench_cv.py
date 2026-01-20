@@ -222,6 +222,55 @@ def plot_spatial_adaptation_per_group(iso_h1, iso_h0, alpha_values, group_ids, d
 # COMBINED / AGGREGATE PLOTS
 # ============================================================================
 
+def plot_combined_loss_convergence(results_dict, save_path=None):
+    """
+    Global loss convergence across all datasets.
+
+    Shows optimization loss curves for all datasets on one figure,
+    with both raw values and normalized (0-1) views.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(20, 8))
+    colors = plt.cm.tab10(np.linspace(0, 1, min(10, len(results_dict))))
+
+    # Left: Raw loss values
+    ax1 = axes[0]
+    for (ds_name, res), color in zip(results_dict.items(), colors):
+        losses = res['history']['losses']
+        iterations = np.arange(len(losses)) * 50  # log_interval=50
+        ax1.plot(iterations, losses, '-', linewidth=2.5, color=color, label=ds_name)
+
+    ax1.set_xlabel('Iteration')
+    ax1.set_ylabel('Loss')
+    ax1.set_title('Loss Convergence (Raw)', fontweight='bold')
+    ax1.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=12)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_yscale('log')
+
+    # Right: Normalized loss (relative to initial)
+    ax2 = axes[1]
+    for (ds_name, res), color in zip(results_dict.items(), colors):
+        losses = np.array(res['history']['losses'])
+        iterations = np.arange(len(losses)) * 50
+        # Normalize: (loss - min) / (max - min)
+        loss_norm = (losses - losses.min()) / (losses[0] - losses.min() + 1e-10)
+        ax2.plot(iterations, loss_norm, '-', linewidth=2.5, color=color, label=ds_name)
+
+    ax2.set_xlabel('Iteration')
+    ax2.set_ylabel('Normalized Loss')
+    ax2.set_title('Loss Convergence (Normalized)', fontweight='bold')
+    ax2.grid(True, alpha=0.3)
+    ax2.set_ylim(-0.05, 1.05)
+
+    fig.suptitle('Global Loss Convergence Across All Datasets', fontsize=24, fontweight='bold', y=1.02)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
+
 def plot_combined_alpha_convergence(results_dict, save_path=None):
     """Combined alpha convergence across all datasets."""
     plt.figure(figsize=(16, 10))
@@ -422,6 +471,12 @@ def generate_all_plots(results_dict, output_dir, show=False):
         print(f"  - {ds_name}: done")
 
     print("\nGenerating combined plots...")
+
+    # Global Loss Convergence
+    plot_combined_loss_convergence(
+        results_dict,
+        save_path=os.path.join(output_dir, 'combined_loss_convergence.png') if not show else None
+    )
 
     # Combined Alpha Convergence
     plot_combined_alpha_convergence(
