@@ -14,12 +14,12 @@ from copulas.univariate import GaussianKDE
 from third_party.ADbench.myutils import Utils
 
 
-BASE_DIR = '/home/benny/Repos/'
-
+# Automatically detect base directory
 import os
-cwd = os.getcwd()
-if cwd.find('batman') != -1:
-    BASE_DIR = '/home/batman/general_code/'
+_this_file = os.path.abspath(__file__)
+_adbench_dir = os.path.dirname(_this_file)
+_repo_root = os.path.dirname(os.path.dirname(_adbench_dir))
+BASE_DIR = _repo_root + '/'
 
 
 
@@ -43,12 +43,12 @@ class DataGenerator():
         self.n_samples_threshold = n_samples_threshold
 
         # dataset list
-        self.dataset_list_classical = [os.path.splitext(_)[0] for _ in os.listdir(BASE_DIR+'/MaxEntropyRF/third_party/ADbench/datasets/Classical')
+        self.dataset_list_classical = [os.path.splitext(_)[0] for _ in os.listdir(BASE_DIR+'/third_party/ADbench/datasets/Classical')
                                             if os.path.splitext(_)[1] == '.npz'] # classical AD datasets
         # self.dataset_list_cv = [os.path.splitext(_)[0] for _ in os.listdir(BASE_DIR + '/MaxEntropyRF/third_party/ADbench/datasets/CV_by_ResNet18')
         #                         if os.path.splitext(_)[1] == '.npz'] # CV datasets
-        self.dataset_list_nlp = [os.path.splitext(_)[0] for _ in os.listdir(BASE_DIR + '/MaxEntropyRF/third_party/ADbench/datasets/NLP_by_RoBERTa')
-                                 if os.path.splitext(_)[1] == '.npz'] # NLP datasets
+        self.dataset_list_nlp = [os.path.splitext(_)[0] for _ in os.listdir(BASE_DIR + '/third_party/ADbench/datasets/NLP_by_RoBERTa')
+                                 if os.path.splitext(_)[1] == '.npz'] if os.path.exists(BASE_DIR + '/third_party/ADbench/datasets/NLP_by_RoBERTa') else [] # NLP datasets
 
         # myutils function
         self.utils = Utils()
@@ -230,11 +230,11 @@ class DataGenerator():
             assert X is not None and y is not None, "For customized dataset, you should provide the X and y!"
         else:
             if self.dataset in self.dataset_list_classical:
-                data = np.load(os.path.join(BASE_DIR + '/MaxEntropyRF/third_party/ADbench/datasets/Classical', self.dataset + '.npz'), allow_pickle=True)
+                data = np.load(os.path.join(BASE_DIR + '/third_party/ADbench/datasets/Classical', self.dataset + '.npz'), allow_pickle=True)
             # elif self.dataset in self.dataset_list_cv:
             #     data = np.load(os.path.join('datasets', 'CV_by_ResNet18', self.dataset + '.npz'), allow_pickle=True)
             elif self.dataset in self.dataset_list_nlp:
-                data = np.load(os.path.join(BASE_DIR + '/MaxEntropyRF/third_party/ADbench/datasets/Classical', self.dataset + '.npz'), allow_pickle=True)
+                data = np.load(os.path.join(BASE_DIR + '/third_party/ADbench/datasets/NLP_by_RoBERTa', self.dataset + '.npz'), allow_pickle=True)
             else:
                 raise NotImplementedError
 

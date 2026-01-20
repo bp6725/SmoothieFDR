@@ -1,0 +1,47 @@
+# GSEA (Graph-based) Benchmark Configuration
+# ==========================================
+# Default configuration for main_gsea_bench.py
+
+type: gsea
+
+# Data path
+data_path: Data/benchmarks.pkl
+
+# Benchmark selection (null = run all, or specify list)
+# benchmarks: null  # Run all benchmarks
+benchmarks:
+  - TGCA
+# - GEO
+# - ARCHS4
+
+# Limits
+max_datasets_per_benchmark: 10
+
+# Subsampling for efficiency
+subsample_tuning: 1000  # Genes for HP tuning
+subsample_main: 5000    # Genes for main execution
+n_bins_tuning: 50
+n_bins_main: 100
+
+# Kernel parameters
+beta_grid: [2]  # Diffusion kernel beta values to try
+
+# Lambda grid for hyperparameter tuning (log scale)
+# Will use np.logspace(-15, 20, 15) if empty
+lambda_grid: []
+
+# Optimization parameters
+learning_rate: 0.05
+lambda_reg: 10.0
+lambda_bound: 500.0
+max_iter: 15000
+
+# Cross-validation
+n_folds: 3
+
+# Experiment settings
+random_state: 42
+
+# Validation flags
+validate_structure: true   # Check spectral gap
+validate_alignment: true   # Check Moran's I

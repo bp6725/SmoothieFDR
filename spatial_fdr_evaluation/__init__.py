@@ -14,11 +14,13 @@ from . import methods
 from . import evaluation
 from . import visualization
 from . import utils
+from . import config
 
 __all__ = [
     "data",
-    "methods", 
+    "methods",
     "evaluation",
     "visualization",
-    "utils"
+    "utils",
+    "config"
 ]
